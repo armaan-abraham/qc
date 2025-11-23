@@ -176,7 +176,7 @@ def main(_):
             )
             train_dataset = process_train_dataset(train_dataset)
 
-        batch = train_dataset.sample_sequence(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount)
+        batch = train_dataset.sample_contiguous(config['batch_size'], sequence_length=FLAGS.horizon_length)
 
         agent, offline_info = agent.update(batch)
 
