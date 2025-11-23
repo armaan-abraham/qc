@@ -88,6 +88,41 @@ class Dataset(FrozenDict):
             if np.random.rand() < self.p_aug:
                 self.augment(batch, ['observations', 'next_observations'])
         return batch
+    
+    def sample_contiguous(self, batch_size, sequence_length):
+        """Sample a batch of sequences, possibly crossing episode boundaries.
+        Unlike other sampling functions, this returns state, action, reward
+        arrays as contiguous blocks without separate next states and actions.
+        """
+        idxs = np.random.randint(self.size - sequence_length, size=batch_size)
+        
+        data = {k: v[idxs] for k, v in self.items()}
+
+        # Pre-compute all required indices
+        all_idxs = idxs[:, None] + np.arange(sequence_length)[None, :]  # (batch_size, sequence_length)
+        all_idxs = all_idxs.flatten() 
+
+        # Batch fetch data to avoid loops
+        batch_observations = self['observations'][all_idxs].reshape(batch_size, sequence_length, *self['observations'].shape[1:])
+        batch_next_observations = self['next_observations'][all_idxs].reshape(batch_size, sequence_length, *self['next_observations'].shape[1:])
+        batch_actions = self['actions'][all_idxs].reshape(batch_size, sequence_length, *self['actions'].shape[1:])
+        batch_rewards = self['rewards'][all_idxs].reshape(batch_size, sequence_length, *self['rewards'].shape[1:])
+        batch_masks = self['masks'][all_idxs].reshape(batch_size, sequence_length, *self['masks'].shape[1:])
+        batch_terminals = self['terminals'][all_idxs].reshape(batch_size, sequence_length, *self['terminals'].shape[1:])
+
+        # Assert next observations are shifted by one timestep for each sequence
+        # This is just a sanity check; can be removed for performance
+        assert np.all(batch_next_observations[:, :-1] == batch_observations[:, 1:])
+
+        return dict(
+            observations=data['observations'].copy(),
+            full_observations=batch_observations,
+            actions=batch_actions,
+            masks=batch_masks,
+            rewards=batch_rewards,
+            terminals=batch_terminals,
+        )
+
 
     def sample_sequence(self, batch_size, sequence_length, discount):
         idxs = np.random.randint(self.size - sequence_length + 1, size=batch_size)
