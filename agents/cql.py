@@ -52,22 +52,24 @@ class Value(nn.Module):
             observations = self.encoder(observations)
 
         # Embed each action
-        action_embed = nn.Dense(self.d_model_action, name="act_embed")(actions)
-        
-        # TODO: use where to only run forward passes based on mask
-
-        act_resid = repeat(action_embed, "batch seq_obs d_model -> batch seq_obs seq_act d_model", seq_act=seq_len)
-        # Define positional embeddings for each action position relative to each observation position
-        act_predict_idx = jnp.maximum(repeat(jnp.arange(seq_len), "seq_act -> seq_obs seq_act", seq_obs=seq_len) - jnp.arange(seq_len)[:, None], 0)
-        act_resid += repeat(
-            nn.Embed(
-                num_embeddings=self.max_seq_len, 
-                features=self.d_model_action, 
-                name="act_pos_embed"
-            )(jnp.arange(act_predict_idx)),
-            "seq_obs seq_act d_model -> batch seq_obs seq_act d_model",
-            batch=batch_size,
+        act_embed = nn.Dense(self.d_model_action, name="act_embed")(actions)
+        # Define pos embed here because we use it in different branches
+        act_pos_embed = nn.Embed(
+            num_embeddings=self.max_seq_len, 
+            features=self.d_model_action, 
+            name="act_pos_embed"
         )
+        if multi_action:
+            act_resid = repeat(act_embed, "batch seq_obs d_model -> batch seq_obs seq_act d_model", seq_act=seq_len)
+            # Define positional embeddings for each action position relative to each observation position
+            act_predict_idx = jnp.maximum(repeat(jnp.arange(seq_len), "seq_act -> seq_obs seq_act", seq_obs=seq_len) - jnp.arange(seq_len)[:, None], 0)
+            act_resid += repeat(
+                act_pos_embed(jnp.arange(act_predict_idx)),
+                "seq_obs seq_act d_model -> batch seq_obs seq_act d_model",
+                batch=batch_size,
+            )
+        else:
+            act_resid = act_embed + act_pos_embed(0)
 
         obs_resid = nn.Dense(self.d_model_observation, name="obs_embed")(observations)
 
@@ -79,74 +81,101 @@ class Value(nn.Module):
 
             # === Attention ===
 
-            # Each action for a given observation attends to all previous actions and the observation
-            # [batch seq_obs seq_act d_model]
-            attn_q = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_query_{layer_idx}")(act_resid_ln1)
+            # Define modules here because they are used in multiple branches
+            act_query_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_query_{layer_idx}")
+            obs_key_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"obs_key_{layer_idx}")
+            act_key_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_key_{layer_idx}")
+            obs_value_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"obs_value_{layer_idx}")
+            act_value_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_value_{layer_idx}")
 
-            obs_resid_attn = repeat(obs_resid_ln1, "batch seq_obs d_model -> batch seq_obs 1 d_model")
-            # [batch seq_obs 1 num_heads d_head]
-            attn_k_obs = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"obs_key_{layer_idx}")(obs_resid_attn)
-            # [batch seq_obs seq_act num_heads d_head]
-            attn_k_act = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_key_{layer_idx}")(act_resid_ln1)
-            # [batch seq_obs seq_act+1 num_heads d_head]
-            attn_k = jnp.concatenate([
-                attn_k_obs,
-                attn_k_act,
-            ], axis=2)
+            if multi_action:
+                # Each action for a given observation attends to all previous actions and the observation
+                # [batch seq_obs seq_act d_model]
+                attn_q = act_query_transform(act_resid_ln1)
 
-            attn_v_obs = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"obs_value_{layer_idx}")(obs_resid_attn)
-            attn_v_act = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_value_{layer_idx}")(act_resid_ln1)
-            # [batch seq_obs seq_act+1 num_heads d_head]
-            attn_v = jnp.concatenate([
-                attn_v_obs,
-                attn_v_act,
-            ], axis=2)
+                obs_resid_attn = repeat(obs_resid_ln1, "batch seq_obs d_model -> batch seq_obs 1 d_model")
+                # [batch seq_obs 1 num_heads d_head]
+                attn_k_obs = obs_key_transform(obs_resid_attn)
+                # [batch seq_obs seq_act num_heads d_head]
+                attn_k_act = act_key_transform(act_resid_ln1)
+                # [batch seq_obs seq_act+1 num_heads d_head]
+                attn_k = jnp.concatenate([
+                    attn_k_obs,
+                    attn_k_act,
+                ], axis=2)
 
-            attn_weights = einsum(
-                attn_q,
-                attn_k,
-                "batch seq_obs seq_q num_heads d_head, batch seq_obs seq_k num_heads d_head -> batch seq_obs seq_q seq_k num_heads",
-            ) / jnp.sqrt(d_head)
+                attn_v_obs = obs_value_transform(obs_resid_attn)
+                attn_v_act = act_value_transform(act_resid_ln1)
+                # [batch seq_obs seq_act+1 num_heads d_head]
+                attn_v = jnp.concatenate([
+                    attn_v_obs,
+                    attn_v_act,
+                ], axis=2)
 
-            # Construct attention mask. For a given observation, all actions up
-            # to the observation's time step are masked out to all querying
-            # actions, and each action can attend to previous actions and the
-            # observation.
-            attn_mask_seq = repeat(
-                jnp.tril(jnp.ones((seq_len, seq_len))),
-                "seq_q seq_k -> seq_obs seq_q seq_k",
-                seq_obs=seq_len,
-            )
-            attn_mask_valid = jnp.arange(seq_len)[:, None] <= jnp.arange(seq_len)[None, :]
-            attn_mask_valid = repeat(
-                attn_mask_valid,
-                "seq_obs seq_k -> seq_obs seq_q seq_k",
-                seq_q=seq_len,
-            )
-            attn_mask_seq[~attn_mask_valid] = 0
-            # Also include entries for observations
-            attn_mask_seq = jnp.concatenate(
-                [jnp.ones((seq_len, seq_len, 1)), attn_mask_seq],
-                axis=2,
-            )
-            assert attn_mask_seq.shape == (seq_len, seq_len, seq_len + 1)
-            attn_mask = repeat(
-                attn_mask_seq,
-                "seq_obs seq_q seq_k -> batch seq_obs seq_q seq_k",
-                batch=batch_size,
-            )
-            assert jnp.all(reduce(attn_mask, "batch seq_obs seq_q seq_k -> batch seq_obs seq_q", "min") >= 0)
+                attn_weights = einsum(
+                    attn_q,
+                    attn_k,
+                    "batch seq_obs seq_q num_heads d_head, batch seq_obs seq_k num_heads d_head -> batch seq_obs seq_q seq_k num_heads",
+                ) / jnp.sqrt(d_head)
 
+                # Construct attention mask. For a given observation, all actions up
+                # to the observation's time step are masked out to all querying
+                # actions, and each action can attend to previous actions and the
+                # observation.
+                attn_mask_seq = repeat(
+                    # Actions cannot attend to themselves, which is fine from a
+                    # nan perspective because there will always be an
+                    # observation to attend to. This also makes the
+                    # single-action case simpler.
+                    jnp.tril(jnp.ones((seq_len, seq_len)), k=-1),
+                    "seq_q seq_k -> seq_obs seq_q seq_k",
+                    seq_obs=seq_len,
+                )
 
-            attn_weights = jnp.where(attn_mask[..., None] > 0, attn_weights, -1e6)
+                # Mask out actions preceding the observation
+                attn_mask_valid = jnp.arange(seq_len)[:, None] <= jnp.arange(seq_len)[None, :]
+                attn_mask_valid = repeat(
+                    attn_mask_valid,
+                    "seq_obs seq_k -> seq_obs seq_q seq_k",
+                    seq_q=seq_len,
+                )
+                attn_mask_seq[~attn_mask_valid] = 0
 
-            attn_probs = nn.softmax(attn_weights, axis=3)
+                # Every action can attend to the observation
+                attn_mask_seq = jnp.concatenate(
+                    [jnp.ones((seq_len, seq_len, 1)), attn_mask_seq],
+                    axis=2,
+                )
+                assert attn_mask_seq.shape == (seq_len, seq_len, seq_len + 1)
+                attn_mask = repeat(
+                    attn_mask_seq,
+                    "seq_obs seq_q seq_k -> batch seq_obs seq_q seq_k",
+                    batch=batch_size,
+                )
+                assert jnp.all(reduce(attn_mask, "batch seq_obs seq_q seq_k -> batch seq_obs seq_q", "min") >= 0)
 
-            attn_output = einsum(
-                attn_probs,
-                attn_v,
-                "batch seq_obs seq_q seq_k num_heads, batch seq_obs seq_k num_heads d_head -> batch seq_obs seq_q (num_heads d_head)",
-            )
+                attn_weights = jnp.where(attn_mask[..., None] > 0, attn_weights, -1e6)
+
+                attn_probs = nn.softmax(attn_weights, axis=3)
+
+                attn_output = einsum(
+                    attn_probs,
+                    attn_v,
+                    "batch seq_obs seq_q seq_k num_heads, batch seq_obs seq_k num_heads d_head -> batch seq_obs seq_q (num_heads d_head)",
+                )
+            else:
+                # Single action case: action attends to observation only
+                attn_q = act_query_transform(act_resid_ln1)
+                attn_k = obs_key_transform(obs_resid_ln1)
+                attn_v = obs_value_transform(obs_resid_ln1)
+
+                attn_probs = jnp.ones((batch_size, seq_len, self.num_heads))
+
+                attn_output = einsum(
+                    attn_probs,
+                    attn_v,
+                    "batch seq_obs num_heads, batch seq_obs num_heads d_head -> batch seq_obs (num_heads d_head)",
+                )
 
             act_resid += attn_output
 
@@ -171,9 +200,12 @@ class Value(nn.Module):
         act_resid = nn.LayerNorm(name="final_act_ln")(act_resid)
         q_values = nn.Dense(1, name="q_value_head")(act_resid).squeeze(-1)
 
-        # Result contains (multi-action) Q value for each state and each
-        # contiguous future action sequence starting from that state.
-        assert q_values.shape == (batch_size, seq_len, seq_len)
+        if multi_action:
+            # Result contains (multi-action) Q value for each state and each
+            # contiguous future action sequence starting from that state.
+            assert q_values.shape == (batch_size, seq_len, seq_len)
+        else:
+            assert q_values.shape == (batch_size, seq_len)
         return q_values
 
 
