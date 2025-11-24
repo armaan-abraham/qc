@@ -35,6 +35,57 @@ class Value(nn.Module):
     max_seq_len: int
     encoder: nn.Module = None # observation encoder
 
+    def setup(self):
+        self.act_embed = nn.Dense(self.d_model_action, name="act_embed")
+        self.act_pos_embed = nn.Embed(
+            num_embeddings=self.max_seq_len,
+            features=self.d_model_action,
+            name="act_pos_embed"
+        )
+        self.obs_embed = nn.Dense(self.d_model_observation, name="obs_embed")
+        self.blocks = []
+        for layer_idx in range(self.num_layers):
+            self.blocks.append(
+                {
+                    "obs_ln1": nn.LayerNorm(name=f"obs_ln1_{layer_idx}"),
+                    "act_ln1": nn.LayerNorm(name=f"act_ln1_{layer_idx}"),
+                    "obs_ln2": nn.LayerNorm(name=f"obs_ln2_{layer_idx}"),
+                    "act_ln2": nn.LayerNorm(name=f"act_ln2_{layer_idx}"),
+                    "act_query": nn.DenseGeneral(
+                        features=(self.num_heads, self.d_model_action // self.num_heads),
+                        axis=-1,
+                        name=f"act_query_{layer_idx}"
+                    ),
+                    "obs_key": nn.DenseGeneral(
+                        features=(self.num_heads, self.d_model_observation // self.num_heads),
+                        axis=-1,
+                        name=f"obs_key_{layer_idx}"
+                    ),
+                    "act_key": nn.DenseGeneral(
+                        features=(self.num_heads, self.d_model_action // self.num_heads),
+                        axis=-1,
+                        name=f"act_key_{layer_idx}"
+                    ),
+                    "obs_value": nn.DenseGeneral(
+                        features=(self.num_heads, self.d_model_observation // self.num_heads),
+                        axis=-1,
+                        name=f"obs_value_{layer_idx}"
+                    ),
+                    "act_value": nn.DenseGeneral(
+                        features=(self.num_heads, self.d_model_action // self.num_heads),
+                        axis=-1,
+                        name=f"act_value_{layer_idx}"
+                    ),
+                    "obs_mlp_1": nn.Dense(self.d_model_observation * 4, name=f"obs_mlp_1_{layer_idx}"),
+                    "obs_mlp_2": nn.Dense(self.d_model_observation, name=f"obs_mlp_2_{layer_idx}"),
+                    "act_mlp_1": nn.Dense(self.d_model_action * 4, name=f"act_mlp_1_{layer_idx}"),
+                    "act_mlp_2": nn.Dense(self.d_model_action, name=f"act_mlp_2_{layer_idx}"),
+                }
+            )
+        self.final_act_ln = nn.LayerNorm(name="final_act_ln")
+        self.q_value_head = nn.Dense(1, name="q_value_head")
+
+
     @nn.compact
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray, mask: jnp.ndarray, multi_action: bool = True) -> jnp.ndarray:
         assert observations.ndim == 3
@@ -52,9 +103,9 @@ class Value(nn.Module):
             observations = self.encoder(observations)
 
         # Embed each action
-        act_embed = nn.Dense(self.d_model_action, name="act_embed")(actions)
+        act_embed = self.act_embed(actions)
         # Define pos embed here because we use it in different branches
-        act_pos_embed = nn.Embed(
+        act_pos_embed = self.act_pos_embed(
             num_embeddings=self.max_seq_len, 
             features=self.d_model_action, 
             name="act_pos_embed"
@@ -71,41 +122,34 @@ class Value(nn.Module):
         else:
             act_resid = act_embed + act_pos_embed(0)
 
-        obs_resid = nn.Dense(self.d_model_observation, name="obs_embed")(observations)
+        obs_resid = self.obs_embed(observations)
 
         for layer_idx in range(self.num_layers):
             # === Pre-attn layer norm ===
 
-            obs_resid_ln1 = nn.LayerNorm(name=f"obs_ln1_{layer_idx}")(obs_resid)
-            act_resid_ln1 = nn.LayerNorm(name=f"act_ln1_{layer_idx}")(act_resid)
+            obs_resid_ln1 = self.blocks[layer_idx]["obs_ln1"](obs_resid)
+            act_resid_ln1 = self.blocks[layer_idx]["act_ln1"](act_resid)
 
             # === Attention ===
-
-            # Define modules here because they are used in multiple branches
-            act_query_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_query_{layer_idx}")
-            obs_key_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"obs_key_{layer_idx}")
-            act_key_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_key_{layer_idx}")
-            obs_value_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"obs_value_{layer_idx}")
-            act_value_transform = nn.DenseGeneral(features=(self.num_heads, d_head), axis=-1, name=f"act_value_{layer_idx}")
 
             if multi_action:
                 # Each action for a given observation attends to all previous actions and the observation
                 # [batch seq_obs seq_act d_model]
-                attn_q = act_query_transform(act_resid_ln1)
+                attn_q = self.blocks[layer_idx]["act_query"](act_resid_ln1)
 
                 obs_resid_attn = repeat(obs_resid_ln1, "batch seq_obs d_model -> batch seq_obs 1 d_model")
                 # [batch seq_obs 1 num_heads d_head]
-                attn_k_obs = obs_key_transform(obs_resid_attn)
+                attn_k_obs = self.blocks[layer_idx]["obs_key"](obs_resid_attn)
                 # [batch seq_obs seq_act num_heads d_head]
-                attn_k_act = act_key_transform(act_resid_ln1)
+                attn_k_act = self.blocks[layer_idx]["act_key"](act_resid_ln1)
                 # [batch seq_obs seq_act+1 num_heads d_head]
                 attn_k = jnp.concatenate([
                     attn_k_obs,
                     attn_k_act,
                 ], axis=2)
 
-                attn_v_obs = obs_value_transform(obs_resid_attn)
-                attn_v_act = act_value_transform(act_resid_ln1)
+                attn_v_obs = self.blocks[layer_idx]["obs_value"](obs_resid_attn)
+                attn_v_act = self.blocks[layer_idx]["act_value"](act_resid_ln1)
                 # [batch seq_obs seq_act+1 num_heads d_head]
                 attn_v = jnp.concatenate([
                     attn_v_obs,
@@ -165,9 +209,9 @@ class Value(nn.Module):
                 )
             else:
                 # Single action case: action attends to observation only
-                attn_q = act_query_transform(act_resid_ln1)
-                attn_k = obs_key_transform(obs_resid_ln1)
-                attn_v = obs_value_transform(obs_resid_ln1)
+                attn_q = self.blocks[layer_idx]["act_query"](act_resid_ln1)
+                attn_k = self.blocks[layer_idx]["obs_key"](obs_resid_ln1)
+                attn_v = self.blocks[layer_idx]["obs_value"](obs_resid_ln1)
 
                 attn_probs = jnp.ones((batch_size, seq_len, self.num_heads))
 
@@ -181,24 +225,24 @@ class Value(nn.Module):
 
             # === Pre-MLP layer norm ===
 
-            obs_resid_ln2 = nn.LayerNorm(name=f"obs_ln2_{layer_idx}")(obs_resid)
-            act_resid_ln2 = nn.LayerNorm(name=f"act_ln2_{layer_idx}")(act_resid)
+            obs_resid_ln2 = self.blocks[layer_idx]["obs_ln2"](obs_resid)
+            act_resid_ln2 = self.blocks[layer_idx]["act_ln2"](act_resid)
 
             # === MLP ===
 
-            obs_mlp = nn.Dense(self.d_model_observation * 4, name=f"obs_mlp_1_{layer_idx}")(obs_resid_ln2)
+            obs_mlp = self.blocks[layer_idx]["obs_mlp_1"](obs_resid_ln2)
             obs_mlp = nn.gelu(obs_mlp)
-            obs_mlp = nn.Dense(self.d_model_observation, name=f"obs_mlp_2_{layer_idx}")(obs_mlp)
+            obs_mlp = self.blocks[layer_idx]["obs_mlp_2"](obs_mlp)
             obs_resid += obs_mlp
 
-            act_mlp = nn.Dense(self.d_model_action * 4, name=f"act_mlp_1_{layer_idx}")(act_resid_ln2)
+            act_mlp = self.blocks[layer_idx]["act_mlp_1"](act_resid_ln2)
             act_mlp = nn.gelu(act_mlp)
-            act_mlp = nn.Dense(self.d_model_action, name=f"act_mlp_2_{layer_idx}")(act_mlp)
+            act_mlp = self.blocks[layer_idx]["act_mlp_2"](act_mlp)
             act_resid += act_mlp
 
         # Compute q values from action representations
-        act_resid = nn.LayerNorm(name="final_act_ln")(act_resid)
-        q_values = nn.Dense(1, name="q_value_head")(act_resid).squeeze(-1)
+        act_resid = self.final_act_ln(act_resid)
+        q_values = self.q_value_head(act_resid).squeeze(-1)
 
         if multi_action:
             # Result contains (multi-action) Q value for each state and each
@@ -286,7 +330,7 @@ def get_config():
     raise NotImplementedError
     config = ml_collections.ConfigDict(
         dict(
-            agent_name='cql',  # Agent name.
+            agent_name='cql',
         )
     )
     return config
