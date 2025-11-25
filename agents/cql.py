@@ -282,7 +282,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         bc_loss = -log_probs_mean
 
         # Q loss
-        q_loss = -self.network.select('target_critic')(batch['observations'], actor_dists.mode(), multi_action=False).mean()
+        q_loss = -self.network.select('critic')(batch['observations'], actor_dists.mode(), multi_action=False).mean()
 
         return bc_loss * self.config['bc_alpha'] + q_loss, {
             'bc_loss': bc_loss,
