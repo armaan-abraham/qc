@@ -439,7 +439,7 @@ def get_config():
             num_heads=4,
 
             # Actor
-            actor_hidden_dims=[512, 512, 512],
+            actor_hidden_dims=(512, 512, 512),
 
             tau=0.005,  # Target network update rate.
             weight_decay=1e-3,
