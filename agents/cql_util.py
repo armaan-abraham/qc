@@ -192,7 +192,21 @@ def coherent_q_loss(
         )
     ) / jnp.maximum(jnp.sum(diffs_valid), 1)
 
-    return one_step_loss + pairwise_loss
+    # For any given observation, Q functions with fewer parametrized actions
+    # should be greater. This is because taking the optimal policy earlier will
+    # result in a higher (or equal) utility than taking any actual sequence of
+    # actions.
+    diffs = q[:, :, 1:] - q[:, :, :-1]
+    valid_diffs = valid_q_mask_batch[:, :, 1:] & valid_q_mask_batch[:, :, :-1]
+    inequality_loss = jnp.sum(
+        jnp.where(
+            valid_diffs,
+            jnp.maximum(diffs, 0.0) ** 2,
+            0.0,
+        )
+    ) / jnp.maximum(jnp.sum(valid_diffs), 1)
+
+    return one_step_loss + pairwise_loss + inequality_loss
 
 def get_action_predict_pos(seq_len: int) -> jnp.ndarray:
     # This is the index of the action being predicted with respect to each
@@ -216,26 +230,26 @@ if __name__ == "__main__":
 
     rewards = jnp.array(
         [
-            [1],
-            [4],
+            [1, 2, 3],
+            [4, 5, 6],
         ]
     )
     q_a_star_next = jnp.array(
         [
-            [10],
-            [40],
+            [10, 20, 30],
+            [40, 45, 50],
         ]
     )
     completion_mask = jnp.array(
         [
-            [0],
-            [0],
+            [0, 0, 0],
+            [0, 0, 0],
         ]
     ).astype(bool)
     continuation_mask = jnp.array(
         [
-            [1],
-            [1],
+            [1, 1, 0],
+            [1, 0, 1],
         ]
     ).astype(bool)
     discount = 0.9
@@ -247,8 +261,8 @@ if __name__ == "__main__":
     )
     print("target q")
     print(target_q)
-    print("valid q mask")
-    print(construct_valid_q_mask(1).astype(int))
+    # print("valid q mask")
+    # print(construct_valid_q_mask(4).astype(int))
 
     # continuation_mask = jnp.array(
     #     [
@@ -260,16 +274,24 @@ if __name__ == "__main__":
     #     ]
     # )
 
-    print("valid q mask batch")
-    print(construct_valid_q_mask_batch(continuation_mask).astype(int))
+    # print("valid q mask batch")
+    # print(construct_valid_q_mask_batch(continuation_mask).astype(int))
+
+    action_predict_pos = get_action_predict_pos(3)
+    print("action predict idx")
+    print(action_predict_pos)
 
     q = jnp.array(
         [
             [
-                [11],
+                [11, 12, 13],
+                [13, 15, 17],
+                [17, 20, 23],
             ],
             [
-                [23],
+                [23, 27, 31],
+                [36, 41, 46],
+                [42, 48, 54],
             ],
         ]
     )
