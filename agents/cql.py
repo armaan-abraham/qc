@@ -11,11 +11,8 @@ from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.encoders import encoder_modules
-from rlpd_networks import MLP, Actor
-from rlpd_distributions import TanhNormal
+from utils.networks import Actor
 from .cql_util import construct_attn_mask_seq, get_action_predict_pos, coherent_q_loss
-
-from functools import partial
 
 class Value(nn.Module):
     d_model_observation: int
