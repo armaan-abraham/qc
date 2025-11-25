@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import ml_collections
 import optax
-from einops import repeat, einsum, reduce, rearrange
+from einops import repeat, einsum, rearrange
 from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
@@ -95,7 +95,7 @@ class Value(nn.Module):
                 batch=batch_size,
             )
             # Each query should have at least 1 key
-            assert jnp.all(reduce(attn_mask, "batch seq_obs seq_q seq_k -> batch seq_obs seq_q", "min") >= 0)
+            assert jnp.all(attn_mask.min(axis=-1) >= 0)
 
         # If observation encoder is provided, encode observations
         if self.encoder is not None:
@@ -188,7 +188,7 @@ class Value(nn.Module):
                 attn_v = self.blocks[layer_idx]["obs_value"](obs_resid_ln1)
                 assert attn_v.shape == (batch_size, seq_len, self.num_heads, self.d_attn_head)
 
-                attn_output = reduce(
+                attn_output = rearrange(
                     attn_v,
                     "batch seq_obs num_heads d_head -> batch seq_obs (num_heads d_head)",
                 )
