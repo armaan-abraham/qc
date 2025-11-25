@@ -94,8 +94,6 @@ class Value(nn.Module):
                 "seq_obs seq_q seq_k -> batch seq_obs seq_q seq_k",
                 batch=batch_size,
             )
-            # Each query should have at least 1 key
-            assert jnp.all(attn_mask.min(axis=-1) >= 0)
 
         # If observation encoder is provided, encode observations
         if self.encoder is not None:
@@ -292,6 +290,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             'log_probs_mean': log_probs_mean,
         }
 
+    @jax.jit
     def total_loss(self, batch, grad_params):
         info = {}
 
