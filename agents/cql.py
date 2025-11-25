@@ -447,7 +447,7 @@ def get_config():
             lr=3e-4,  # Learning rate.
             batch_size=256,
 
-            bc_alpha=0, # Behavioral cloning loss weight.
+            bc_alpha=0.0, # Behavioral cloning loss weight.
 
         )
     )
