@@ -67,7 +67,6 @@ class LoggingHelper:
 def main(_):
     exp_name = get_exp_name(FLAGS.seed)
     run = setup_wandb(project='qc', group=FLAGS.run_group, name=exp_name)
-    jax.config.update("jax_disable_jit", True)
     
     FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, FLAGS.env_name, exp_name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)

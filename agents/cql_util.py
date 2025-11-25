@@ -141,7 +141,6 @@ def coherent_q_loss(
 ):
     assert completion_mask.dtype == bool
     assert continuation_mask.dtype == bool
-    assert not jnp.any(completion_mask & continuation_mask)
     # TODO: check boundaries
 
     batch_size, seq_len = rewards.shape
