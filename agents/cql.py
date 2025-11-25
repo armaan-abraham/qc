@@ -117,7 +117,7 @@ class Value(nn.Module):
             )
         else:
             # Each q value is for the action at the observation time step
-            act_resid = act_embed + self.act_pos_embed(0)
+            act_resid = act_embed + self.act_pos_embed(jnp.array([0]))
 
         obs_resid = self.obs_embed(observations)
 
