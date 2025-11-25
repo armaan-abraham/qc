@@ -165,25 +165,32 @@ def coherent_q_loss(
     assert valid_q_mask_batch.dtype == bool
 
     # Compute one-step TD loss based on the difference between q and target_q
-    one_step_loss = jnp.mean((q[valid_q_mask_batch] - target_q[valid_q_mask_batch]) ** 2)
+    one_step_loss = jnp.sum(
+        jnp.where(
+            valid_q_mask_batch,
+            (q - target_q) ** 2,
+            0.0,
+        )
+    ) / jnp.sum(valid_q_mask_batch)
 
-    # Compute pairwise loss between each q value across the sequence. The seq
-    # valid mask is constant across the batch, so we initialize the pairwise
-    # differences based on this mask first, then mask out based on the batch
-    # valid mask.
-    q_valid_base = q[:, valid_q_mask_seq]
-    q_target_valid_base = target_q[:, valid_q_mask_seq]
-    batch_valids = valid_q_mask_batch[:, valid_q_mask_seq]
+    # Compute pairwise loss between each q value across the sequence.
+    q_flat = rearrange(q, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
+    target_q_flat = rearrange(target_q, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
+    valid_flat = rearrange(valid_q_mask_batch, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
 
-    pairwise_dim = q_valid_base.shape[1]
-    i, j = jnp.triu_indices(pairwise_dim, k=1)
-    diffs_valid = batch_valids[:, i] & batch_valids[:, j]
-    diffs = q_valid_base[:, i] - q_valid_base[:, j]
-    diffs = diffs[diffs_valid]
-    target_diffs = q_target_valid_base[:, i] - q_target_valid_base[:, j]
-    target_diffs = target_diffs[diffs_valid]
+    i, j = jnp.triu_indices(seq_len * seq_len, k=1)
+    diffs_valid = valid_flat[:, i] & valid_flat[:, j]
 
-    pairwise_loss = jnp.mean((diffs - target_diffs) ** 2)
+    diffs = q_flat[:, i] - q_flat[:, j]
+    target_diffs = target_q_flat[:, i] - target_q_flat[:, j]
+
+    pairwise_loss = jnp.sum(
+        jnp.where(
+            diffs_valid,
+            (diffs - target_diffs) ** 2,
+            0.0,
+        )
+    ) / jnp.sum(diffs_valid)
 
     return one_step_loss + pairwise_loss
 
@@ -228,7 +235,7 @@ if __name__ == "__main__":
     continuation_mask = jnp.array(
         [
             [1, 1, 0],
-            [1, 1, 1],
+            [1, 0, 1],
         ]
     ).astype(bool)
     discount = 0.9
