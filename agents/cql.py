@@ -241,8 +241,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2]
 
         batch_size, seq_len = batch['observations'].shape[0:2]
-        a_star_next = jnp.clip(self.network.select('actor')(batch['next_observations']).mode(), -1, 1)
-        q_a_star_next = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], a_star_next, multi_action=False))
+        a_star_next = jax.lax.stop_gradient(jnp.clip(self.network.select('actor')(batch['next_observations']).mode(), -1, 1))
+        q_a_star_next = self.network.select('critic')(batch['next_observations'], a_star_next, multi_action=False, params=grad_params)
         assert q_a_star_next.shape == (batch_size, seq_len)
 
         q = self.network.select('critic')(batch['observations'], batch['actions'], multi_action=True, params=grad_params)
@@ -315,15 +315,6 @@ class CQLAgent(flax.struct.PyTreeNode):
         return loss, info
         
 
-    def target_update(self, network, module_name):
-        """Update the target network."""
-        new_target_params = jax.tree_util.tree_map(
-            lambda p, tp: p * self.config['tau'] + tp * (1 - self.config['tau']),
-            self.network.params[f'modules_{module_name}'],
-            self.network.params[f'modules_target_{module_name}'],
-        )
-        network.params[f'modules_target_{module_name}'] = new_target_params
-
     @staticmethod
     def _update(self, batch):
         """Update the agent and return a new agent with information dictionary."""
@@ -333,7 +324,6 @@ class CQLAgent(flax.struct.PyTreeNode):
             return self.total_loss(batch, grad_params)
 
         new_network, info = self.network.apply_loss_fn(loss_fn=loss_fn)
-        self.target_update(new_network, 'critic')
 
         return self.replace(network=new_network, rng=new_rng), info
     
@@ -405,7 +395,6 @@ class CQLAgent(flax.struct.PyTreeNode):
         network_info = dict(
             actor=(actor_def, (ex_observations)),
             critic=(critic_def, (ex_observations, ex_actions)),
-            target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_actions)),
         )
 
         networks = {k: v[0] for k, v in network_info.items()}
@@ -420,8 +409,6 @@ class CQLAgent(flax.struct.PyTreeNode):
         network = TrainState.create(network_def, network_params, tx=network_tx)
 
         params = network.params
-
-        params[f'modules_target_critic'] = params[f'modules_critic']
 
 
         return cls(rng, network=network, config=flax.core.FrozenDict(**config))
@@ -447,7 +434,6 @@ def get_config():
             # Actor
             actor_hidden_dims=(512, 512, 512),
 
-            tau=0.005,  # Target network update rate.
             weight_decay=1e-3,
             discount=0.99,  # Discount factor.
             lr=3e-4,  # Learning rate.
