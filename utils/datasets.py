@@ -115,8 +115,7 @@ class Dataset(FrozenDict):
         assert np.all(batch_masks[batch_terminals.astype(bool)] == 0)
 
         return dict(
-            observations=data['observations'].copy(),
-            full_observations=batch_observations,
+            observations=batch_observations,
             actions=batch_actions,
             masks=batch_masks,
             rewards=batch_rewards,
