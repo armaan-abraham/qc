@@ -105,6 +105,7 @@ class ACFQLAgent(flax.struct.PyTreeNode):
             'actor_loss': actor_loss,
             'bc_flow_loss': bc_flow_loss,
             'distill_loss': distill_loss,
+            'q_loss': q_loss,
         }
 
     @jax.jit
