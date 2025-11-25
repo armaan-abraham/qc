@@ -190,7 +190,7 @@ def coherent_q_loss(
             (diffs - target_diffs) ** 2,
             0.0,
         )
-    ) / jnp.sum(diffs_valid)
+    ) / jnp.maximum(jnp.sum(diffs_valid), 1)
 
     return one_step_loss + pairwise_loss
 
@@ -216,26 +216,26 @@ if __name__ == "__main__":
 
     rewards = jnp.array(
         [
-            [1, 2, 3],
-            [4, 5, 6],
+            [1],
+            [4],
         ]
     )
     q_a_star_next = jnp.array(
         [
-            [10, 20, 30],
-            [40, 45, 50],
+            [10],
+            [40],
         ]
     )
     completion_mask = jnp.array(
         [
-            [0, 0, 0],
-            [0, 0, 0],
+            [0],
+            [0],
         ]
     ).astype(bool)
     continuation_mask = jnp.array(
         [
-            [1, 1, 0],
-            [1, 0, 1],
+            [1],
+            [1],
         ]
     ).astype(bool)
     discount = 0.9
@@ -247,8 +247,8 @@ if __name__ == "__main__":
     )
     print("target q")
     print(target_q)
-    # print("valid q mask")
-    # print(construct_valid_q_mask(4).astype(int))
+    print("valid q mask")
+    print(construct_valid_q_mask(1).astype(int))
 
     # continuation_mask = jnp.array(
     #     [
@@ -260,24 +260,16 @@ if __name__ == "__main__":
     #     ]
     # )
 
-    # print("valid q mask batch")
-    # print(construct_valid_q_mask_batch(continuation_mask).astype(int))
-
-    action_predict_pos = get_action_predict_pos(3)
-    print("action predict idx")
-    print(action_predict_pos)
+    print("valid q mask batch")
+    print(construct_valid_q_mask_batch(continuation_mask).astype(int))
 
     q = jnp.array(
         [
             [
-                [11, 12, 13],
-                [13, 15, 17],
-                [17, 20, 23],
+                [11],
             ],
             [
-                [23, 27, 31],
-                [36, 41, 46],
-                [42, 48, 54],
+                [23],
             ],
         ]
     )
