@@ -241,7 +241,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2]
 
         batch_size, seq_len = batch['observations'].shape[0:2]
-        a_star_next = self.network.select('actor')(batch['next_observations']).mode()
+        a_star_next = jnp.clip(self.network.select('actor')(batch['next_observations']).mode(), -1, 1)
         q_a_star_next = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], a_star_next, multi_action=False))
         assert q_a_star_next.shape == (batch_size, seq_len)
 
@@ -276,13 +276,14 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2]
 
         actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
+        actor_actions = jnp.clip(actor_dists.mode(), -1, 1)
 
         # Behavorial cloning loss
         log_probs_mean = actor_dists.log_prob(jnp.clip(batch['actions'], -1 + 1e-5, 1 - 1e-5)).mean()
         bc_loss = -log_probs_mean
 
         # Q loss
-        q_loss = -self.network.select('critic')(batch['observations'], actor_dists.mode(), multi_action=False).mean()
+        q_loss = -self.network.select('critic')(batch['observations'], actor_actions, multi_action=False).mean()
 
         return bc_loss * self.config['bc_alpha'] + q_loss, {
             'bc_loss': bc_loss,
