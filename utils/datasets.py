@@ -116,6 +116,7 @@ class Dataset(FrozenDict):
 
         return dict(
             observations=batch_observations,
+            next_observations=batch_next_observations,
             actions=batch_actions,
             masks=batch_masks,
             rewards=batch_rewards,
