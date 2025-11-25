@@ -276,7 +276,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2]
 
         actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
-        actor_actions = jnp.clip(actor_dists.mode(), -1, 1)
+        actor_actions_unclipped = actor_dists.mode()
+        actor_actions = jnp.clip(actor_actions_unclipped, -1, 1)
 
         # Behavorial cloning loss
         log_probs_mean = actor_dists.log_prob(jnp.clip(batch['actions'], -1 + 1e-5, 1 - 1e-5)).mean()
@@ -288,6 +289,10 @@ class CQLAgent(flax.struct.PyTreeNode):
         return bc_loss * self.config['bc_alpha'] + q_loss, {
             'bc_loss': bc_loss,
             'q_loss': q_loss,
+            'actions_unclipped_mean': actor_actions_unclipped.mean(),
+            'actions_unclipped_std': actor_actions_unclipped.std(),
+            'actions_unclipped_max': actor_actions_unclipped.max(),
+            'actions_unclipped_min': actor_actions_unclipped.min(),
             'log_probs_mean': log_probs_mean,
         }
 
