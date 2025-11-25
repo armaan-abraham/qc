@@ -10,23 +10,12 @@ from einops import repeat, einsum, reduce
 from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
+from utils.encoders import encoder_modules
 from rlpd_networks import MLP, Actor
 from rlpd_distributions import TanhNormal
-from .cql_util import construct_attn_mask_seq
+from .cql_util import construct_attn_mask_seq, get_action_predict_pos, coherent_q_loss
 
 from functools import partial
-
-
-class Temperature(nn.Module):
-    initial_temperature: float = 1.0
-
-    @nn.compact
-    def __call__(self) -> jnp.ndarray:
-        log_temp = self.param(
-            "log_temp",
-            init_fn=lambda key: jnp.full((), jnp.log(self.initial_temperature)),
-        )
-        return jnp.exp(log_temp)
 
 class Value(nn.Module):
     d_model_observation: int
@@ -88,16 +77,16 @@ class Value(nn.Module):
 
 
     @nn.compact
-    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray, mask: jnp.ndarray, multi_action: bool = True) -> jnp.ndarray:
+    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray, multi_action: bool = True) -> jnp.ndarray:
         assert observations.ndim == 3
         assert actions.ndim == 3
-        assert mask.ndim == 2
-        assert actions.shape[0:2] == observations.shape[0:2] == mask.shape
+        assert actions.shape[0:2] == observations.shape[0:2]
         assert self.num_heads < self.d_model_action
         assert self.d_model_action % self.num_heads == 0
         d_head = self.d_model_action // self.num_heads
 
         batch_size, seq_len = observations.shape[0:2]
+        assert seq_len <= self.max_seq_len
 
         if multi_action:
             # Construct attention mask
@@ -120,10 +109,11 @@ class Value(nn.Module):
             act_resid = repeat(act_embed, "batch seq_obs d_model -> batch seq_obs seq_act d_model", seq_act=seq_len)
             # Define positional embeddings for each action position relative to
             # each observation position. This will start at 0 for the action at
-            # the observation time step and then increment by 1.
-            act_predict_idx = jnp.maximum(repeat(jnp.arange(seq_len), "seq_act -> seq_obs seq_act", seq_obs=seq_len) - jnp.arange(seq_len)[:, None], 0)
+            # the observation time step and then increment by 1. This will be
+            # invalid for actions preceding the observation, but these will be
+            # masked out.
             act_resid += repeat(
-                self.act_pos_embed(jnp.arange(act_predict_idx)),
+                self.act_pos_embed(get_action_predict_pos(seq_len)),
                 "seq_obs seq_act d_model -> batch seq_obs seq_act d_model",
                 batch=batch_size,
             )
@@ -148,14 +138,15 @@ class Value(nn.Module):
             # === Attention ===
 
             if multi_action:
-                # Each action for a given observation attends to all previous
-                # actions for that observation and the observation. Observations
-                # do not attend to anything (markovian). Compute queries for
-                # actions, and keys and values for both actions and observations.
+            # Each action for a given observation attends to all previous
+            # actions for that observation and the observation. Observations do
+            # not attend to anything. Compute queries for actions, and keys and
+            # values for both actions and observations.
 
                 attn_q = self.blocks[layer_idx]["act_query"](act_resid_ln1)
                 assert attn_q.shape == (batch_size, seq_len, seq_len, self.num_heads, d_head)
 
+                # TODO: the relationship between obs and acts is wrong here
                 obs_resid_attn = repeat(obs_resid_ln1, "batch seq_obs d_model -> batch seq_obs 1 d_model")
                 # [batch seq_obs 1 num_heads d_head]
                 attn_k_obs = self.blocks[layer_idx]["obs_key"](obs_resid_attn)
@@ -244,15 +235,83 @@ class CQLAgent(flax.struct.PyTreeNode):
     network: Any
     config: Any = nonpytree_field()
 
-    def critic_loss(self, batch, grad_params, rng):
-        pass 
+    def critic_loss(self, batch, grad_params):
+        # Batch data must have proper sequence structure
+        assert batch['observations'].ndim == 3 # [batch, seq_len, obs_dim]
+        assert batch['actions'].ndim == 3 # [batch, seq_len, act_dim]
+        assert batch['rewards'].ndim == 2 # [batch, seq_len]
+        assert batch['masks'].ndim == 2 # [batch, seq_len]
+        assert batch['terminals'].ndim == 2 # [batch, seq_len]
+        assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2]
 
-    def actor_loss(self, batch, grad_params, rng):
-        pass
+        batch_size, seq_len = batch['observations'].shape[0:2]
+        a_star_next = self.network.select('actor')(batch['next_observations']).mode()
+        q_a_star_next = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], a_star_next, multi_action=False))
+        assert q_a_star_next.shape == (batch_size, seq_len)
+
+        q = self.network.select('critic')(batch['observations'], batch['actions'], multi_action=True, params=grad_params)
+        assert q.shape == (batch_size, seq_len, seq_len)
+
+        q_loss = coherent_q_loss(
+            q=q,
+            q_a_star_next=q_a_star_next,
+            rewards=batch['rewards'],
+            completion_mask=~batch['masks'],
+            continuation_mask=~batch['terminals'],
+            discount=self.config['discount'],
+        )
+        return q_loss, {
+            'critic_loss': q_loss,
+            'q_mean': q.mean(),
+            'q_std': q.std(),
+            'q_max': q.max(),
+            'q_min': q.min(),
+            'q_a_star_next_mean': q_a_star_next.mean(),
+            'q_a_star_next_std': q_a_star_next.std(),
+            'q_a_star_next_max': q_a_star_next.max(),
+            'q_a_star_next_min': q_a_star_next.min(),
+        }
+        
+
+    def actor_loss(self, batch, grad_params):
+        # Batch data must have proper sequence structure
+        assert batch['observations'].ndim == 3 # [batch, seq_len, obs_dim]
+        assert batch['actions'].ndim == 3 # [batch, seq_len, act_dim]
+        assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2]
+
+        actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
+
+        # Behavorial cloning loss
+        log_probs_mean = actor_dists.log_prob(jnp.clip(batch['actions'], -1 + 1e-5, 1 - 1e-5)).mean()
+        bc_loss = -log_probs_mean
+
+        # Q loss
+        q_loss = -self.network.select('target_critic')(batch['observations'], actor_dists.mode(), multi_action=False).mean()
+
+        return bc_loss * self.config['bc_alpha'] + q_loss, {
+            'bc_loss': bc_loss,
+            'q_loss': q_loss,
+            'log_probs_mean': log_probs_mean,
+        }
 
     @jax.jit
-    def total_loss(self, batch, grad_params, rng=None):
-        pass
+    def total_loss(self, batch, grad_params):
+        info = {}
+
+        critic_loss, critic_info = self.critic_loss(batch, grad_params)
+        for k, v in critic_info.items():
+            info[f'critic/{k}'] = v
+
+        actor_loss, actor_info = self.actor_loss(batch, grad_params)
+        for k, v in actor_info.items():
+            info[f'actor/{k}'] = v
+
+        info['mean_completions'] = (~batch['masks']).sum(axis=1).mean()
+        info['mean_terminations'] = (batch['terminals']).sum(axis=1).mean()
+
+        loss = critic_loss + actor_loss
+        return loss, info
+        
 
     def target_update(self, network, module_name):
         """Update the target network."""
@@ -285,7 +344,6 @@ class CQLAgent(flax.struct.PyTreeNode):
         """Update the agent and return a new agent with information dictionary."""
         agent, infos = jax.lax.scan(self._update, self, batch)
         return agent, jax.tree_util.tree_map(lambda x: x.mean(), infos)
-    
 
     @jax.jit
     def sample_actions(
@@ -293,6 +351,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         observations,
         rng=None,
     ):
+        # Observations can be any shape, as long as the last dimension is the
+        # observation dimension.
         """Sample actions from the actor."""
         dist = self.network.select('actor')(observations)
         actions = dist.sample(seed=rng)
@@ -307,13 +367,89 @@ class CQLAgent(flax.struct.PyTreeNode):
         ex_actions,
         config,
     ):
-        pass
+        rng = jax.random.PRNGKey(seed)
+        rng, init_rng = jax.random.split(rng, 2)
+
+        config['action_dim'] = ex_actions.shape[-1]
+
+        # Define encoders.
+        encoders = dict()
+        if config['encoder'] is not None:
+            encoder_module = encoder_modules[config['encoder']]
+            encoders['critic'] = encoder_module()
+            encoders['actor'] = encoder_module()
+
+        # Define networks.
+        critic_def = Value(
+            d_model_observation=config['d_model_observation'],
+            d_model_action=config['d_model_action'],
+            num_layers=config['num_layers'],
+            num_heads=config['num_heads'],
+            max_seq_len=config['horizon_length'],
+            encoder=encoders.get('critic'),
+        )
+        actor_def = Actor(
+            hidden_dims=config['actor_hidden_dims'],
+            action_dim=config['action_dim'],
+            layer_norm=True,
+            encoder=encoders.get('actor'),
+            const_std=True,
+            tanh_squash=False,
+        )
+
+        network_info = dict(
+            actor=(actor_def, (ex_observations)),
+            critic=(critic_def, (ex_observations, ex_actions)),
+            target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_actions)),
+        )
+
+        networks = {k: v[0] for k, v in network_info.items()}
+        network_args = {k: v[1] for k, v in network_info.items()}
+
+        network_def = ModuleDict(networks)
+        if config["weight_decay"] > 0.:
+            network_tx = optax.adamw(learning_rate=config['lr'], weight_decay=config["weight_decay"])
+        else:
+            network_tx = optax.adam(learning_rate=config['lr'])
+        network_params = network_def.init(init_rng, **network_args)['params']
+        network = TrainState.create(network_def, network_params, tx=network_tx)
+
+        params = network.params
+
+        params[f'modules_target_critic'] = params[f'modules_critic']
+
+
+        return cls(rng, network=network, config=flax.core.FrozenDict(**config))
+
+
     
 def get_config():
-    raise NotImplementedError
     config = ml_collections.ConfigDict(
         dict(
             agent_name='cql',
+            
+            encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
+            action_dim=ml_collections.config_dict.placeholder(int),  # Action dimension (will be set automatically).
+
+            horizon_length=ml_collections.config_dict.placeholder(int), # Will be set
+
+            # Critic
+            d_model_observation=256,
+            d_model_action=64,
+            num_layers=4,
+            num_heads=4,
+
+            # Actor
+            actor_hidden_dims=[512, 512, 512],
+
+            tau=0.005,  # Target network update rate.
+            weight_decay=1e-3,
+            discount=0.99,  # Discount factor.
+            lr=3e-4,  # Learning rate.
+            batch_size=256,
+
+            bc_alpha=0, # Behavioral cloning loss weight.
+
         )
     )
     return config
