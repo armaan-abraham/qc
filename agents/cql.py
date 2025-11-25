@@ -292,7 +292,6 @@ class CQLAgent(flax.struct.PyTreeNode):
             'log_probs_mean': log_probs_mean,
         }
 
-    @jax.jit
     def total_loss(self, batch, grad_params):
         info = {}
 
