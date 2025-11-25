@@ -253,8 +253,8 @@ class CQLAgent(flax.struct.PyTreeNode):
             q=q,
             q_a_star_next=q_a_star_next,
             rewards=batch['rewards'],
-            completion_mask=~batch['masks'],
-            continuation_mask=~batch['terminals'],
+            completion_mask=~batch['masks'].astype(bool),
+            continuation_mask=~batch['terminals'].astype(bool),
             discount=self.config['discount'],
         )
         return q_loss, {
