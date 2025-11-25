@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import ml_collections
 import optax
-from einops import repeat, einsum, reduce
+from einops import repeat, einsum, reduce, rearrange
 from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
@@ -178,15 +178,15 @@ class Value(nn.Module):
 
                 attn_probs = nn.softmax(attn_weights, axis=3)
 
-                attn_output = einsum(
+                attn_output = rearrange(einsum(
                     attn_probs,
                     attn_v,
-                    "batch seq_obs seq_q seq_k num_heads, batch seq_obs seq_k num_heads d_head -> batch seq_obs seq_q (num_heads d_head)",
-                )
+                    "batch seq_obs seq_q seq_k num_heads, batch seq_obs seq_k num_heads d_head -> batch seq_obs seq_q num_heads d_head",
+                ), "batch seq_obs seq_q num_heads d_head -> batch seq_obs seq_q (num_heads d_head)")
             else:
                 # Single action case: action attends to observation only
                 attn_v = self.blocks[layer_idx]["obs_value"](obs_resid_ln1)
-                assert attn_v.shape == (batch_size, seq_len, self.num_heads, d_head)
+                assert attn_v.shape == (batch_size, seq_len, self.num_heads, self.d_attn_head)
 
                 attn_output = reduce(
                     attn_v,
