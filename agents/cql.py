@@ -30,9 +30,9 @@ class Value(nn.Module):
             name="act_pos_embed"
         )
         self.obs_embed = nn.Dense(self.d_model_observation, name="obs_embed")
-        self.blocks = []
+        blocks = []
         for layer_idx in range(self.num_layers):
-            self.blocks.append(
+            blocks.append(
                 {
                     "obs_ln1": nn.LayerNorm(name=f"obs_ln1_{layer_idx}"),
                     "act_ln1": nn.LayerNorm(name=f"act_ln1_{layer_idx}"),
@@ -69,6 +69,7 @@ class Value(nn.Module):
                     "act_mlp_2": nn.Dense(self.d_model_action, name=f"act_mlp_2_{layer_idx}"),
                 }
             )
+        self.blocks = blocks
         self.final_act_ln = nn.LayerNorm(name="final_act_ln")
         self.q_value_head = nn.Dense(1, name="q_value_head")
 
