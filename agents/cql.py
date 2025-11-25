@@ -365,6 +365,9 @@ class CQLAgent(flax.struct.PyTreeNode):
         ex_actions,
         config,
     ):
+        assert ex_observations.ndim == 3, ex_observations.shape
+        assert ex_actions.ndim == 3, ex_actions.shape
+
         rng = jax.random.PRNGKey(seed)
         rng, init_rng = jax.random.split(rng, 2)
 
