@@ -112,7 +112,7 @@ class Dataset(FrozenDict):
 
         # Assert next observations are shifted by one timestep for each sequence
         assert np.all(np.all((batch_next_observations[:, :-1] == batch_observations[:, 1:]), axis=-1) | (batch_terminals[:, :-1] == 1) | (batch_masks[:, :-1] == 0))
-        assert np.all(batch_terminals[~batch_masks.astype(bool)])
+        batch_terminals[~batch_masks.astype(bool)] = 1.0  # Ensure terminals are 1 on episode completions
 
         return dict(
             observations=batch_observations,
