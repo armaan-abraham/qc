@@ -302,8 +302,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         for k, v in actor_info.items():
             info[f'actor/{k}'] = v
 
-        info['mean_completions'] = (~batch['masks']).astype(int).sum(axis=1).mean()
-        info['mean_terminations'] = (batch['terminals']).astype(int).sum(axis=1).mean()
+        info['mean_completions'] = (1 - batch['masks']).sum(axis=1).mean()
+        info['mean_terminations'] = batch['terminals'].sum(axis=1).mean()
 
         loss = critic_loss + actor_loss
         return loss, info
