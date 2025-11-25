@@ -30,6 +30,7 @@ class Value(nn.Module):
             name="act_pos_embed"
         )
         self.obs_embed = nn.Dense(self.d_model_observation, name="obs_embed")
+        self.d_attn_head = self.d_model_action // self.num_heads
         blocks = []
         for layer_idx in range(self.num_layers):
             blocks.append(
@@ -39,27 +40,27 @@ class Value(nn.Module):
                     "obs_ln2": nn.LayerNorm(name=f"obs_ln2_{layer_idx}"),
                     "act_ln2": nn.LayerNorm(name=f"act_ln2_{layer_idx}"),
                     "act_query": nn.DenseGeneral(
-                        features=(self.num_heads, self.d_model_action // self.num_heads),
+                        features=(self.num_heads, self.d_attn_head),
                         axis=-1,
                         name=f"act_query_{layer_idx}"
                     ),
                     "obs_key": nn.DenseGeneral(
-                        features=(self.num_heads, self.d_model_observation // self.num_heads),
+                        features=(self.num_heads, self.d_attn_head),
                         axis=-1,
                         name=f"obs_key_{layer_idx}"
                     ),
                     "act_key": nn.DenseGeneral(
-                        features=(self.num_heads, self.d_model_action // self.num_heads),
+                        features=(self.num_heads, self.d_attn_head),
                         axis=-1,
                         name=f"act_key_{layer_idx}"
                     ),
                     "obs_value": nn.DenseGeneral(
-                        features=(self.num_heads, self.d_model_observation // self.num_heads),
+                        features=(self.num_heads, self.d_attn_head),
                         axis=-1,
                         name=f"obs_value_{layer_idx}"
                     ),
                     "act_value": nn.DenseGeneral(
-                        features=(self.num_heads, self.d_model_action // self.num_heads),
+                        features=(self.num_heads, self.d_attn_head),
                         axis=-1,
                         name=f"act_value_{layer_idx}"
                     ),
@@ -81,7 +82,6 @@ class Value(nn.Module):
         assert actions.shape[0:2] == observations.shape[0:2]
         assert self.num_heads < self.d_model_action
         assert self.d_model_action % self.num_heads == 0
-        d_head = self.d_model_action // self.num_heads
 
         batch_size, seq_len = observations.shape[0:2]
         assert seq_len <= self.max_seq_len
@@ -136,28 +136,28 @@ class Value(nn.Module):
             # === Attention ===
 
             if multi_action:
-            # Each action for a given observation attends to all previous
-            # actions for that observation and the observation. Observations do
-            # not attend to anything. Compute queries for actions, and keys and
-            # values for both actions and observations.
+                # Each action for a given observation attends to all previous
+                # actions for that observation and the observation. Observations do
+                # not attend to anything. Compute queries for actions, and keys and
+                # values for both actions and observations.
 
                 attn_q = self.blocks[layer_idx]["act_query"](act_resid_ln1)
-                assert attn_q.shape == (batch_size, seq_len, seq_len, self.num_heads, d_head)
+                assert attn_q.shape == (batch_size, seq_len, seq_len, self.num_heads, self.d_attn_head)
 
-                # TODO: the relationship between obs and acts is wrong here
                 obs_resid_attn = repeat(obs_resid_ln1, "batch seq_obs d_model -> batch seq_obs 1 d_model")
+                assert obs_resid_attn.shape == (batch_size, seq_len, 1, self.d_model_observation)
                 # [batch seq_obs 1 num_heads d_head]
                 attn_k_obs = self.blocks[layer_idx]["obs_key"](obs_resid_attn)
-                assert attn_k_obs.shape == (batch_size, seq_len, 1, self.num_heads, d_head)
+                assert attn_k_obs.shape == (batch_size, seq_len, 1, self.num_heads, self.d_attn_head)
                 # [batch seq_obs seq_act num_heads d_head]
                 attn_k_act = self.blocks[layer_idx]["act_key"](act_resid_ln1)
-                assert attn_k_act.shape == (batch_size, seq_len, seq_len, self.num_heads, d_head)
+                assert attn_k_act.shape == (batch_size, seq_len, seq_len, self.num_heads, self.d_attn_head)
                 # [batch seq_obs seq_act+1 num_heads d_head]
                 attn_k = jnp.concatenate([
                     attn_k_obs,
                     attn_k_act,
                 ], axis=2)
-                assert attn_k.shape == (batch_size, seq_len, seq_len + 1, self.num_heads, d_head)
+                assert attn_k.shape == (batch_size, seq_len, seq_len + 1, self.num_heads, self.d_attn_head)
 
                 attn_v_obs = self.blocks[layer_idx]["obs_value"](obs_resid_attn)
                 attn_v_act = self.blocks[layer_idx]["act_value"](act_resid_ln1)
@@ -165,13 +165,13 @@ class Value(nn.Module):
                     attn_v_obs,
                     attn_v_act,
                 ], axis=2)
-                assert attn_v.shape == (batch_size, seq_len, seq_len + 1, self.num_heads, d_head)
+                assert attn_v.shape == (batch_size, seq_len, seq_len + 1, self.num_heads, self.d_attn_head)
 
                 attn_weights = einsum(
                     attn_q,
                     attn_k,
                     "batch seq_obs seq_q num_heads d_head, batch seq_obs seq_k num_heads d_head -> batch seq_obs seq_q seq_k num_heads",
-                ) / jnp.sqrt(d_head)
+                ) / jnp.sqrt(self.d_attn_head)
 
                 # Attn mask is equivalently applied to all heads
                 attn_weights = jnp.where(attn_mask[..., None] > 0, attn_weights, -1e6)
