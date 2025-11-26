@@ -380,13 +380,13 @@ class CQLAgent(flax.struct.PyTreeNode):
         rng=None,
     ):
         assert observations.shape[-1] == self.config['obs_dim']
-        batch_dims = observations.shape[:-1]
-        observations = observations.reshape((-1, observations.shape[-1]))
-        num_observations = observations.shape[0]
 
         # Observations can be any shape, as long as the last dimension is the
         # observation dimension.
         if self.config['actor_type'] == 'flow':
+            batch_dims = observations.shape[:-1]
+            observations = observations.reshape((-1, observations.shape[-1]))
+            num_observations = observations.shape[0]
             noises = jax.random.normal(
                 rng,
                 (
@@ -422,12 +422,11 @@ class CQLAgent(flax.struct.PyTreeNode):
             )
 
             return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
-
         else:
             dist = self.network.select('actor')(observations)
             actions = dist.sample(seed=rng)
             actions = jnp.clip(actions, -1, 1)
-        return actions
+            return actions
     
     @jax.jit
     def compute_flow_actions(
