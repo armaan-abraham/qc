@@ -195,6 +195,7 @@ def main(_):
             eval_info, _, _ = evaluate(
                 agent=agent,
                 env=eval_env,
+                horizon_length=FLAGS.horizon_length,
                 action_dim=example_batch["actions"].shape[-1],
                 num_eval_episodes=FLAGS.eval_episodes,
                 num_video_episodes=FLAGS.video_episodes,
@@ -303,6 +304,7 @@ def main(_):
             eval_info, _, _ = evaluate(
                 agent=agent,
                 env=eval_env,
+                horizon_length=FLAGS.horizon_length,
                 action_dim=action_dim,
                 num_eval_episodes=FLAGS.eval_episodes,
                 num_video_episodes=FLAGS.video_episodes,

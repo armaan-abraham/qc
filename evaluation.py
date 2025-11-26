@@ -37,6 +37,7 @@ def add_to(dict_of_lists, single_dict):
 def evaluate(
     agent,
     env,
+    horizon_length,
     num_eval_episodes=50,
     num_video_episodes=0,
     video_frame_skip=3,
@@ -78,25 +79,19 @@ def evaluate(
         step = 0
         render = []
         action_chunk_lens = defaultdict(lambda: 0)
-
-        action_queue = []
+        
+        past_ob_queue = []
 
         gripper_contact_lengths = []
         gripper_contact_length = 0
         while not done:
+            past_ob_queue.append(observation)
+            if len(past_ob_queue) > horizon_length:
+                past_ob_queue.pop(0)
+            ob_array = np.array(past_ob_queue)
             
-            action = actor_fn(observations=observation)
+            action = actor_fn(observations=ob_array[None, ...]).squeeze(0)[-1]
 
-            if len(action_queue) == 0:
-                have_new_action = True
-                action = np.array(action).reshape(-1, action_dim)
-                action_chunk_len = action.shape[0]
-                for a in action:
-                    action_queue.append(a)
-            else:
-                have_new_action = False
-            
-            action = action_queue.pop(0)
             if eval_gaussian is not None:
                 action = np.random.normal(action, eval_gaussian)
 
