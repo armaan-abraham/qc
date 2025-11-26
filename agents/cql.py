@@ -102,7 +102,7 @@ class Value(nn.Module):
         # Embed each action
         act_embed = self.act_embed(actions)
         if multi_action:
-            act_resid = repeat(act_embed, "batch seq_obs d_model -> batch seq_obs seq_act d_model", seq_act=seq_len)
+            act_resid = repeat(act_embed, "batch seq_act d_model -> batch seq_obs seq_act d_model", seq_obs=seq_len)
             # Define positional embeddings for each action position relative to
             # each observation position. This will start at 0 for the action at
             # the observation time step and then increment by 1. This will be
