@@ -402,10 +402,23 @@ class CQLAgent(flax.struct.PyTreeNode):
             actions = self.compute_flow_actions(observations, noises)
             actions = jnp.clip(actions, -1, 1)
             assert actions.shape == (num_observations, self.config['actor_num_samples'], self.config['action_dim'])
-            
-            # Critic expects sequences
-            q = self.network.select("critic")(observations, actions, multi_action=False)
-            assert q.shape == (num_observations, self.config["actor_num_samples"])
+
+            actions_seq = rearrange(
+                actions,
+                "batch sample act_dim -> (batch sample) 1 act_dim",
+            )
+            observations_seq = rearrange(
+                observations,
+                "batch sample obs_dim -> (batch sample) 1 obs_dim",
+            )
+        
+            q = self.network.select("critic")(observations_seq, actions_seq, multi_action=False)
+            q = rearrange(
+                q,
+                "(batch sample) 1 -> batch sample",
+                batch=num_observations,                
+                sample=self.config["actor_num_samples"],
+            )
 
             return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)]
 
