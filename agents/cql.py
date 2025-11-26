@@ -380,6 +380,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         rng=None,
     ):
         assert observations.shape[-1] == self.config['obs_dim']
+        batch_dims = observations.shape[:-1]
         observations = observations.reshape((-1, observations.shape[-1]))
         num_observations = observations.shape[0]
 
@@ -420,7 +421,7 @@ class CQLAgent(flax.struct.PyTreeNode):
                 sample=self.config["actor_num_samples"],
             )
 
-            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)]
+            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
 
         else:
             dist = self.network.select('actor')(observations)
