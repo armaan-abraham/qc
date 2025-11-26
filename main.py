@@ -137,6 +137,7 @@ def main(_):
     
     train_dataset = process_train_dataset(train_dataset)
     example_batch = train_dataset.sample_contiguous(config['batch_size'], sequence_length=FLAGS.horizon_length)
+    ob_dim = example_batch['observations'].shape[-1]
     
     agent_class = agents[config['agent_name']]
     agent = agent_class.create(
@@ -206,9 +207,9 @@ def main(_):
         dict(train_dataset), size=max(FLAGS.buffer_size, train_dataset.size + 1)
     )
         
+    past_ob_queue = []
     ob, _ = env.reset()
     
-    action_queue = []
     action_dim = example_batch["actions"].shape[-1]
 
     # Online RL
@@ -220,16 +221,19 @@ def main(_):
     for i in tqdm.tqdm(range(1, FLAGS.online_steps + 1)):
         log_step += 1
         online_rng, key = jax.random.split(online_rng)
-        
-        # during online rl, the action chunk is executed fully
-        if len(action_queue) == 0:
-            action = agent.sample_actions(observations=ob, rng=key)
 
-            action_chunk = np.array(action).reshape(-1, action_dim)
-            for action in action_chunk:
-                action_queue.append(action)
-        action = action_queue.pop(0)
-        
+        # Update observation queue
+        past_ob_queue.append(ob)
+        if len(past_ob_queue) > FLAGS.horizon_length:
+            past_ob_queue.pop(0)
+        ob_array = np.array(past_ob_queue)
+        assert ob_array.ndim == 2
+        assert ob_array.shape[0] <= FLAGS.horizon_length
+        assert ob_array.shape[1] == ob_dim
+
+        # Sample actions will produce an action for each observation in the
+        # sequence, take the last one
+        action = agent.sample_actions(observations=ob_array[None, :, :], rng=key).squeeze(0)[-1]
         next_ob, int_reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
@@ -276,7 +280,8 @@ def main(_):
         # done
         if done:
             ob, _ = env.reset()
-            action_queue = []  # reset the action queue
+            # reset queues
+            past_ob_queue = []
         else:
             ob = next_ob
 

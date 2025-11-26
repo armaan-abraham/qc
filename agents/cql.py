@@ -223,6 +223,152 @@ class Value(nn.Module):
         return q_values
 
 
+class PastAwareActorVectorField(nn.Module):
+    """Actor vector field network for flow matching"""
+
+    d_model_observation: int
+    d_model_action: int
+    num_layers: int
+    num_heads: int
+    max_seq_len: int
+    encoder: nn.Module = None # observation encoder
+    action_dim: int
+
+    def setup(self) -> None:
+        self.obs_embed = nn.Dense(self.d_model_observation, name="obs_embed")
+        self.obs_pos_embed = nn.Embed(num_embeddings=self.max_seq_len, features=self.d_model_observation, name="obs_pos_embed")
+
+        self.action_embed = nn.Dense(self.d_model_action, name="action_embed")
+
+        self.d_attn_head = self.d_model_observation // self.num_heads
+
+        blocks = []
+        for layer_idx in range(self.num_layers):
+            blocks.append(
+                {
+                    "obs_ln1": nn.LayerNorm(name=f"obs_ln1_{layer_idx}"),
+                    "obs_ln2": nn.LayerNorm(name=f"obs_ln2_{layer_idx}"),
+                    "act_ln2": nn.LayerNorm(name=f"act_ln2_{layer_idx}"),
+                    "obs_query": nn.DenseGeneral(
+                        features=(self.num_heads, self.d_attn_head),
+                        axis=-1,
+                        name=f"act_query_{layer_idx}"
+                    ),
+                    "obs_key": nn.DenseGeneral(
+                        features=(self.num_heads, self.d_attn_head),
+                        axis=-1,
+                        name=f"obs_key_{layer_idx}"
+                    ),
+                    "obs_value": nn.DenseGeneral(
+                        features=(self.num_heads, self.d_attn_head),
+                        axis=-1,
+                        name=f"obs_value_{layer_idx}"
+                    ),
+                    "obs_to_act": nn.Dense(self.d_model_action, name=f"obs_to_act_{layer_idx}"),
+                    "obs_mlp_1": nn.Dense(self.d_model_observation * 4, name=f"obs_mlp_1_{layer_idx}"),
+                    "obs_mlp_2": nn.Dense(self.d_model_observation, name=f"obs_mlp_2_{layer_idx}"),
+                    "act_mlp_1": nn.Dense(self.d_model_action * 4, name=f"act_mlp_1_{layer_idx}"),
+                    "act_mlp_2": nn.Dense(self.d_model_action, name=f"act_mlp_2_{layer_idx}"),
+                }
+            )
+        self.blocks = blocks
+        self.final_act_ln = nn.LayerNorm(name="final_act_ln")
+        self.action_head = nn.Dense(self.action_dim, name="action_head")
+
+    @nn.compact
+    def __call__(self, observations, actions, times, is_encoded=False):
+        """Return the vectors at the given states, actions, and times
+
+        Args:
+            observations: Observations.
+            actions: Actions.
+            times: Times.
+            is_encoded: Whether the observations are already encoded.
+        """
+        if not is_encoded and self.encoder is not None:
+            observations = self.encoder(observations)
+        
+        assert observations.ndim == 3
+        assert actions.ndim == 3
+        assert times.ndim == 3
+        assert observations.shape[0:2] == actions.shape[0:2] == times.shape[0:2]
+        batch_size, seq_len = observations.shape[0:2]
+
+        # Jointly embed actions and times
+        act_resid = self.action_embed(
+            jnp.concatenate([actions, times], axis=-1)
+        )
+
+        # Embed observations
+        obs_resid = self.obs_embed(observations) + repeat(
+            self.obs_pos_embed(jnp.arange(seq_len)),
+            "seq d_model -> batch seq d_model",
+            batch=batch_size,
+        )
+
+        attn_mask = jnp.tril(jnp.ones((seq_len, seq_len)))[None, :, :]
+
+        # Transformer layers
+        for layer_idx in range(self.num_layers):
+            # === Pre-attn layer norm ===
+
+            obs_resid_ln1 = self.blocks[layer_idx]["obs_ln1"](obs_resid)
+
+            # === Attention ===
+
+            # Each observation attends to all previous observations
+            attn_q = self.blocks[layer_idx]["obs_query"](obs_resid_ln1)
+            assert attn_q.shape == (batch_size, seq_len, self.num_heads, self.d_attn_head)
+
+            attn_k = self.blocks[layer_idx]["obs_key"](obs_resid_ln1)
+            assert attn_k.shape == (batch_size, seq_len, self.num_heads, self.d_attn_head)
+
+            attn_v = self.blocks[layer_idx]["obs_value"](obs_resid_ln1)
+            assert attn_v.shape == (batch_size, seq_len, self.num_heads, self.d_attn_head)
+
+            attn_weights = einsum(
+                attn_q,
+                attn_k,
+                "batch seq_q num_heads d_head, batch seq_k num_heads d_head -> batch seq_q seq_k num_heads",
+            ) / jnp.sqrt(self.d_attn_head)
+
+            # Attn mask is equivalently applied to all heads
+            attn_weights = jnp.where(attn_mask > 0, attn_weights, -1e6)
+
+            attn_probs = nn.softmax(attn_weights, axis=2)
+
+            attn_output = rearrange(einsum(
+                attn_probs,
+                attn_v,
+                "batch seq_q seq_k num_heads, batch seq_k num_heads d_head -> batch seq_q num_heads d_head",
+            ), "batch seq_q num_heads d_head -> batch seq_q (num_heads d_head)")
+
+            obs_resid += attn_output
+            act_resid += self.blocks[layer_idx]["obs_to_act"](obs_resid)
+
+            # === Pre-MLP layer norm ===
+
+            obs_resid_ln2 = self.blocks[layer_idx]["obs_ln2"](obs_resid)
+            act_resid_ln2 = self.blocks[layer_idx]["act_ln2"](act_resid)
+
+            # === MLP ===
+
+            obs_mlp = self.blocks[layer_idx]["obs_mlp_1"](obs_resid_ln2)
+            obs_mlp = nn.gelu(obs_mlp)
+            obs_mlp = self.blocks[layer_idx]["obs_mlp_2"](obs_mlp)
+            obs_resid += obs_mlp
+
+            act_mlp = self.blocks[layer_idx]["act_mlp_1"](act_resid_ln2)
+            act_mlp = nn.gelu(act_mlp)
+            act_mlp = self.blocks[layer_idx]["act_mlp_2"](act_mlp)
+            act_resid += act_mlp
+        
+        act_resid = self.final_act_ln(act_resid)
+        acts_out = self.action_head(act_resid)
+        assert acts_out.shape == (batch_size, seq_len, self.action_dim)
+
+        return acts_out
+
 
 class CQLAgent(flax.struct.PyTreeNode):
     """Coherent Q learning (CQL) agent."""
@@ -379,49 +525,47 @@ class CQLAgent(flax.struct.PyTreeNode):
         observations,
         rng=None,
     ):
-        assert observations.shape[-1] == self.config['obs_dim']
+        assert observations.ndim == 3
+        assert observations.shape[1] <= self.config['horizon_length']
+        assert observations.shape[2] == self.config['obs_dim']
+        batch_size, seq_len = observations.shape[0:2]
 
-        # Observations can be any shape, as long as the last dimension is the
-        # observation dimension.
         if self.config['actor_type'] == 'flow':
-            batch_dims = observations.shape[:-1]
-            observations = observations.reshape((-1, observations.shape[-1]))
-            num_observations = observations.shape[0]
             noises = jax.random.normal(
                 rng,
                 (
-                    (num_observations, self.config['actor_num_samples'], self.config['action_dim'])
+                    (batch_size * self.config["actor_num_samples"], seq_len, self.config['action_dim'])
                 ),
             )
             observations = repeat(
                 observations,
-                "obs obs_dim -> obs samples_per_obs obs_dim",
-                samples_per_obs=self.config["actor_num_samples"],
+                "batch seq obs_dim -> (batch sample) seq obs_dim",
+                sample=self.config["actor_num_samples"],
             )
             assert observations.shape[:-1] == noises.shape[:-1]
 
             actions = self.compute_flow_actions(observations, noises)
-            actions = jnp.clip(actions, -1, 1)
-            assert actions.shape == (num_observations, self.config['actor_num_samples'], self.config['action_dim'])
-
-            actions_seq = rearrange(
-                actions,
-                "batch sample act_dim -> (batch sample) 1 act_dim",
-            )
-            observations_seq = rearrange(
-                observations,
-                "batch sample obs_dim -> (batch sample) 1 obs_dim",
-            )
-        
-            q = self.network.select("critic")(observations_seq, actions_seq, multi_action=False)
+            
             q = rearrange(
-                q,
-                "(batch sample) 1 -> batch sample",
-                batch=num_observations,                
+                self.network.select("critic")(observations, actions, multi_action=False),
+                "(batch sample) seq -> (batch seq) sample",
+                batch=batch_size,
                 sample=self.config["actor_num_samples"],
             )
+            actions = rearrange(
+                actions,
+                "(batch sample) seq act_dim -> (batch seq) sample act_dim",
+                batch=batch_size,
+                sample=self.config["actor_num_samples"],
+            )
+            actions_opt = actions[jnp.arange(batch_size * seq_len), jnp.argmax(q, axis=-1)]
 
-            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
+            return rearrange(
+                actions_opt,
+                "(batch seq) act_dim -> batch seq act_dim",
+                batch=batch_size,
+                seq=seq_len,
+            )
         else:
             dist = self.network.select('actor')(observations)
             actions = dist.sample(seed=rng)
@@ -435,14 +579,22 @@ class CQLAgent(flax.struct.PyTreeNode):
         noises,
     ):
         """Compute actions from the BC flow model using the Euler method."""
-        batch_dims = noises.shape[:-1]
+        assert observations.ndim == 3
+        assert noises.ndim == 3
+        assert observations.shape[0:2] == noises.shape[0:2]
+        assert observations.shape[2] == self.config['obs_dim']
+        assert noises.shape[2] == self.config['action_dim']
+        batch_size, seq_len = observations.shape[0:2]
+
         actions = noises
+
         # Euler method.
         for i in range(self.config['flow_steps']):
-            t = jnp.full(batch_dims + (1,), i / self.config['flow_steps'])
+            t = jnp.full((batch_size, seq_len, 1), i / self.config['flow_steps'])
             vels = self.network.select('actor')(observations, actions, t, is_encoded=True)
             actions = actions + vels / self.config['flow_steps']
         actions = jnp.clip(actions, -1, 1)
+
         return actions
 
     @classmethod
@@ -490,11 +642,14 @@ class CQLAgent(flax.struct.PyTreeNode):
             )
             actor_params = (ex_observations,)
         else:
-            actor_def = ActorVectorField(
-                hidden_dims=config['actor_hidden_dims'],
-                action_dim=config['action_dim'],
-                layer_norm=True,
+            actor_def = PastAwareActorVectorField(
+                d_model_observation=config['actor_d_model_observation'],
+                d_model_action=config['actor_d_model_action'],
+                num_layers=config['actor_num_layers'],
+                num_heads=config['actor_num_heads'],
+                max_seq_len=config['horizon_length'],
                 encoder=encoders.get('actor'),
+                action_dim=config['action_dim'],
             )
             actor_params = (ex_observations, ex_actions, jnp.zeros((batch_size, seq_len, 1)))
 
@@ -542,9 +697,17 @@ def get_config():
 
             # Actor
             actor_type='gaussian', # gaussian or flow
-            actor_num_samples=32, # Number of action samples for actor flow
-            flow_steps=10,  # Number of flow steps.
+
+            # Gaussian actor
             actor_hidden_dims=(512, 512, 512),
+
+            # Flow actor
+            flow_steps=10,  # Number of flow steps.
+            actor_num_samples=32, # Number of action samples for actor flow
+            actor_d_model_observation=256,
+            actor_d_model_action=256,
+            actor_num_layers=4,
+            actor_num_heads=4,
 
             tau=0.005,  # Target network update rate.
             weight_decay=1e-3,
