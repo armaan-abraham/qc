@@ -529,6 +529,7 @@ def get_config():
 
             # Actor
             actor_type='gaussian', # gaussian or flow
+            actor_num_samples=32, # Number of action samples for actor flow
             actor_hidden_dims=(512, 512, 512),
 
             tau=0.005,  # Target network update rate.
