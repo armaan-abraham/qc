@@ -155,13 +155,7 @@ def coherent_q_loss(
         discount,
     )
     
-    # The unbatched version of the valid q mask specifies invalidity due to
-    # computing variable length things in a rectangular batch, and is constant
-    # across the batch dim. We instantiate it separately to keep the batch
-    # indexing when doing pairwise comparisons.
-    valid_q_mask_seq = construct_valid_q_mask(seq_len)
     valid_q_mask_batch = construct_valid_q_mask_batch(continuation_mask)
-    assert valid_q_mask_seq.dtype == bool
     assert valid_q_mask_batch.dtype == bool
 
     # Compute one-step TD loss based on the difference between q and target_q
@@ -173,16 +167,17 @@ def coherent_q_loss(
         )
     ) / jnp.sum(valid_q_mask_batch)
 
-    # Compute pairwise loss between each q value across the sequence.
-    q_flat = rearrange(q, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
-    target_q_flat = rearrange(target_q, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
-    valid_flat = rearrange(valid_q_mask_batch, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
+    # At any given action, predictions across all observations should have
+    # consistent differences. We only compute the differences across
+    # observations for a single action because these differences are independent
+    # of q(a*) of the next observation.
+    act_i, act_j = jnp.triu_indices(seq_len, k=1)
 
-    i, j = jnp.triu_indices(seq_len * seq_len, k=1)
-    diffs_valid = valid_flat[:, i] & valid_flat[:, j]
+    diffs_valid = valid_q_mask_batch[:, act_i, :] & valid_q_mask_batch[:, act_j, :]
 
-    diffs = q_flat[:, i] - q_flat[:, j]
-    target_diffs = target_q_flat[:, i] - target_q_flat[:, j]
+    diffs = q[:, act_i, :] - q[:, act_j, :]
+
+    target_diffs = target_q[:, act_i, :] - target_q[:, act_j, :]
 
     pairwise_loss = jnp.sum(
         jnp.where(
@@ -193,9 +188,9 @@ def coherent_q_loss(
     ) / jnp.maximum(jnp.sum(diffs_valid), 1)
 
     # For any given observation, Q functions with fewer parametrized actions
-    # should be greater. This is because taking the optimal policy earlier will
-    # result in a higher (or equal) utility than taking any actual sequence of
-    # actions.
+    # should be greater because taking the optimal policy earlier will result in
+    # a higher (or equal) utility than taking any actual sequence of actions
+    # from the same observation.
     diffs = q[:, :, 1:] - q[:, :, :-1]
     valid_diffs = valid_q_mask_batch[:, :, 1:] & valid_q_mask_batch[:, :, :-1]
     inequality_loss = jnp.sum(
