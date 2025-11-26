@@ -306,7 +306,7 @@ class PastAwareActorVectorField(nn.Module):
             batch=batch_size,
         )
 
-        attn_mask = jnp.tril(jnp.ones((seq_len, seq_len)))[None, :, :]
+        attn_mask = jnp.tril(jnp.ones((seq_len, seq_len)))
 
         # Transformer layers
         for layer_idx in range(self.num_layers):
@@ -333,7 +333,8 @@ class PastAwareActorVectorField(nn.Module):
             ) / jnp.sqrt(self.d_attn_head)
 
             # Attn mask is equivalently applied to all heads
-            attn_weights = jnp.where(attn_mask > 0, attn_weights, -1e6)
+            # Broadcast mask over batch and head dims
+            attn_weights = jnp.where(attn_mask[None, :, :, None] > 0, attn_weights, -1e6)
 
             attn_probs = nn.softmax(attn_weights, axis=2)
 
