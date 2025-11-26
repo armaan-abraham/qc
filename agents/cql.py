@@ -231,8 +231,8 @@ class PastAwareActorVectorField(nn.Module):
     num_layers: int
     num_heads: int
     max_seq_len: int
-    encoder: nn.Module = None # observation encoder
     action_dim: int
+    encoder: nn.Module = None # observation encoder
 
     def setup(self) -> None:
         self.obs_embed = nn.Dense(self.d_model_observation, name="obs_embed")
