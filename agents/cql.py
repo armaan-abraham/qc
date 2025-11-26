@@ -11,7 +11,7 @@ from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.encoders import encoder_modules
-from utils.networks import Actor
+from utils.networks import Actor, ActorVectorField
 from agents.cql_util import construct_attn_mask_seq, get_action_predict_pos, coherent_q_loss
 
 class Value(nn.Module):
@@ -231,7 +231,7 @@ class CQLAgent(flax.struct.PyTreeNode):
     network: Any
     config: Any = nonpytree_field()
 
-    def critic_loss(self, batch, grad_params):
+    def critic_loss(self, batch, grad_params, rng):
         # Batch data must have proper sequence structure
         assert batch['observations'].ndim == 3 # [batch, seq_len, obs_dim]
         assert batch['actions'].ndim == 3 # [batch, seq_len, act_dim]
@@ -241,7 +241,9 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2]
 
         batch_size, seq_len = batch['observations'].shape[0:2]
-        a_star_next = jnp.clip(self.network.select('actor')(batch['next_observations']).mode(), -1, 1)
+        rng, sample_rng = jax.random.split(rng)
+        a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng)
+        assert a_star_next.shape == (batch_size, seq_len, self.config['action_dim'])
         q_a_star_next = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], a_star_next, multi_action=False))
         assert q_a_star_next.shape == (batch_size, seq_len)
 
@@ -269,42 +271,66 @@ class CQLAgent(flax.struct.PyTreeNode):
         }
         
 
-    def actor_loss(self, batch, grad_params):
+    def actor_loss(self, batch, grad_params, rng):
         # Batch data must have proper sequence structure
         assert batch['observations'].ndim == 3 # [batch, seq_len, obs_dim]
         assert batch['actions'].ndim == 3 # [batch, seq_len, act_dim]
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2]
+        batch_size, seq_len, action_dim = batch['actions'].shape
 
-        actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
-        actor_actions_unclipped = actor_dists.mode()
-        actor_actions = jnp.clip(actor_actions_unclipped, -1, 1)
+        if self.config['actor_type'] == 'flow':
+            rng, x_rng, t_rng = jax.random.split(rng, 3)
 
-        # Behavorial cloning loss
-        log_probs_mean = actor_dists.log_prob(jnp.clip(batch['actions'], -1 + 1e-5, 1 - 1e-5)).mean()
-        bc_loss = -log_probs_mean
+            # BC flow loss.
+            x_0 = jax.random.normal(x_rng, (batch_size, seq_len, action_dim))
+            x_1 = batch['actions']
+            t = jax.random.uniform(t_rng, (batch_size, seq_len, 1))
+            x_t = (1 - t) * x_0 + t * x_1
+            vel = x_1 - x_0
 
-        # Q loss
-        q_loss = -self.network.select('critic')(batch['observations'], actor_actions, multi_action=False).mean()
+            pred = self.network.select('actor')(batch['observations'], x_t, t, params=grad_params)
+        
+            bc_flow_loss = jnp.mean((pred - vel) ** 2)
 
-        return bc_loss * self.config['bc_alpha'] + q_loss, {
-            'bc_loss': bc_loss,
-            'q_loss': q_loss,
-            'actions_unclipped_mean': actor_actions_unclipped.mean(),
-            'actions_unclipped_std': actor_actions_unclipped.std(),
-            'actions_unclipped_max': actor_actions_unclipped.max(),
-            'actions_unclipped_min': actor_actions_unclipped.min(),
-            'log_probs_mean': log_probs_mean,
-        }
+            return bc_flow_loss, {
+                'bc_flow_loss': bc_flow_loss,
+            }
+
+        else: # gaussian
+            actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
+            actor_actions_unclipped = actor_dists.mode()
+            actor_actions = jnp.clip(actor_actions_unclipped, -1, 1)
+
+            # Behavorial cloning loss
+            log_probs_mean = actor_dists.log_prob(jnp.clip(batch['actions'], -1 + 1e-5, 1 - 1e-5)).mean()
+            bc_loss = -log_probs_mean
+
+            # Q loss
+            q_loss = -self.network.select('critic')(batch['observations'], actor_actions, multi_action=False).mean()
+
+            return bc_loss * self.config['bc_alpha'] + q_loss, {
+                'bc_loss': bc_loss,
+                'q_loss': q_loss,
+                'actions_unclipped_mean': actor_actions_unclipped.mean(),
+                'actions_unclipped_std': actor_actions_unclipped.std(),
+                'actions_unclipped_max': actor_actions_unclipped.max(),
+                'actions_unclipped_min': actor_actions_unclipped.min(),
+                'log_probs_mean': log_probs_mean,
+            }
 
     @jax.jit
-    def total_loss(self, batch, grad_params):
+    def total_loss(self, batch, grad_params, rng=None):
         info = {}
 
-        critic_loss, critic_info = self.critic_loss(batch, grad_params)
+        rng = rng if rng is not None else self.rng
+
+        rng, actor_rng, critic_rng = jax.random.split(rng, 3)
+
+        critic_loss, critic_info = self.critic_loss(batch, grad_params, critic_rng)
         for k, v in critic_info.items():
             info[f'critic/{k}'] = v
 
-        actor_loss, actor_info = self.actor_loss(batch, grad_params)
+        actor_loss, actor_info = self.actor_loss(batch, grad_params, actor_rng)
         for k, v in actor_info.items():
             info[f'actor/{k}'] = v
 
@@ -330,7 +356,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         new_rng, rng = jax.random.split(self.rng)
 
         def loss_fn(grad_params):
-            return self.total_loss(batch, grad_params)
+            return self.total_loss(batch, grad_params, rng=rng)
 
         new_network, info = self.network.apply_loss_fn(loss_fn=loss_fn)
         self.target_update(new_network, 'critic')
@@ -353,11 +379,56 @@ class CQLAgent(flax.struct.PyTreeNode):
         observations,
         rng=None,
     ):
+        assert observations.shape[-1] == self.config['obs_dim']
+        observations = observations.reshape((-1, observations.shape[-1]))
+        num_observations = observations.shape[0]
+
         # Observations can be any shape, as long as the last dimension is the
         # observation dimension.
-        """Sample actions from the actor."""
-        dist = self.network.select('actor')(observations)
-        actions = dist.sample(seed=rng)
+        if self.config['actor_type'] == 'flow':
+            noises = jax.random.normal(
+                rng,
+                (
+                    (num_observations, self.config['actor_num_samples'], self.config['action_dim'])
+                ),
+            )
+            observations = repeat(
+                observations,
+                "obs obs_dim -> obs samples_per_obs obs_dim",
+                samples_per_obs=self.config["actor_num_samples"],
+            )
+            assert observations.shape[:-1] == noises.shape[:-1]
+
+            actions = self.compute_flow_actions(observations, noises)
+            actions = jnp.clip(actions, -1, 1)
+            assert actions.shape == (num_observations, self.config['actor_num_samples'], self.config['action_dim'])
+            
+            # Critic expects sequences
+            q = self.network.select("critic")(observations, actions, multi_action=False)
+            assert q.shape == (num_observations, self.config["actor_num_samples"])
+
+            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)]
+
+        else:
+            dist = self.network.select('actor')(observations)
+            actions = dist.sample(seed=rng)
+            actions = jnp.clip(actions, -1, 1)
+        return actions
+    
+    @jax.jit
+    def compute_flow_actions(
+        self,
+        observations,
+        noises,
+    ):
+        """Compute actions from the BC flow model using the Euler method."""
+        batch_dims = noises.shape[:-1]
+        actions = noises
+        # Euler method.
+        for i in range(self.config['flow_steps']):
+            t = jnp.full(batch_dims + (1,), i / self.config['flow_steps'])
+            vels = self.network.select('actor')(observations, actions, t, is_encoded=True)
+            actions = actions + vels / self.config['flow_steps']
         actions = jnp.clip(actions, -1, 1)
         return actions
 
@@ -376,6 +447,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         rng, init_rng = jax.random.split(rng, 2)
 
         config['action_dim'] = ex_actions.shape[-1]
+        config['obs_dim'] = ex_observations.shape[-1]
+        batch_size, seq_len = ex_observations.shape[0:2]
 
         # Define encoders.
         encoders = dict()
@@ -393,17 +466,27 @@ class CQLAgent(flax.struct.PyTreeNode):
             max_seq_len=config['horizon_length'],
             encoder=encoders.get('critic'),
         )
-        actor_def = Actor(
-            hidden_dims=config['actor_hidden_dims'],
-            action_dim=config['action_dim'],
-            layer_norm=True,
-            encoder=encoders.get('actor'),
-            const_std=True,
-            tanh_squash=False,
-        )
+        if config['actor_type'] == 'gaussian':
+            actor_def = Actor(
+                hidden_dims=config['actor_hidden_dims'],
+                action_dim=config['action_dim'],
+                layer_norm=True,
+                encoder=encoders.get('actor'),
+                const_std=True,
+                tanh_squash=False,
+            )
+            actor_params = (ex_observations,)
+        else:
+            actor_def = ActorVectorField(
+                hidden_dims=config['actor_hidden_dims'],
+                action_dim=config['action_dim'],
+                layer_norm=True,
+                encoder=encoders.get('actor'),
+            )
+            actor_params = (ex_observations, ex_actions, jnp.zeros((batch_size, seq_len, 1)))
 
         network_info = dict(
-            actor=(actor_def, (ex_observations)),
+            actor=(actor_def, actor_params),
             critic=(critic_def, (ex_observations, ex_actions)),
             target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_actions)),
         )
@@ -445,6 +528,7 @@ def get_config():
             num_heads=4,
 
             # Actor
+            actor_type='gaussian', # gaussian or flow
             actor_hidden_dims=(512, 512, 512),
 
             tau=0.005,  # Target network update rate.
