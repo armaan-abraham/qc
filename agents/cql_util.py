@@ -140,7 +140,7 @@ def coherent_q_loss(
         "batch seq_obs -> batch seq_obs seq_act",
         seq_act=seq_len,
     )
-    diffs = q_expand - target_q
+    diffs = target_q - q_expand
     diffs_i, diffs_j = jnp.triu_indices(seq_len, k=1)
     diffs = diffs[:, diffs_i, diffs_j]
     valid_diffs = valid_q_mask_batch[:, diffs_i, diffs_j]
