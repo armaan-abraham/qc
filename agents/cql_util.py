@@ -2,38 +2,6 @@ import jax
 import jax.numpy as jnp
 from einops import repeat, rearrange, einsum
 
-def construct_attn_mask_seq(seq_len: int) -> jnp.ndarray:
-    # Construct attention mask. For a given observation, all actions up
-    # to the observation's time step are masked out to all querying
-    # actions, and each action can attend to previous actions and the
-    # observation.
-    attn_mask_seq = repeat(
-        # Actions cannot attend to themselves, which is fine from a
-        # nan perspective because there will always be an
-        # observation to attend to. This also makes the
-        # single-action case simpler.
-        jnp.tril(jnp.ones((seq_len, seq_len)), k=-1),
-        "seq_q seq_k -> seq_obs seq_q seq_k",
-        seq_obs=seq_len,
-    )
-
-    # Mask out actions preceding the observation
-    attn_mask_valid = jnp.arange(seq_len)[:, None] <= jnp.arange(seq_len)[None, :]
-    attn_mask_valid = repeat(
-        attn_mask_valid,
-        "seq_obs seq_k -> seq_obs seq_q seq_k",
-        seq_q=seq_len,
-    )
-    attn_mask_seq = attn_mask_seq * attn_mask_valid
-
-    # Every action can attend to the observation
-    attn_mask_seq = jnp.concatenate(
-        [jnp.ones((seq_len, seq_len, 1)), attn_mask_seq],
-        axis=2,
-    )
-    assert attn_mask_seq.shape == (seq_len, seq_len, seq_len + 1)
-    return attn_mask_seq
-
 def get_target_q(
     rewards: jnp.ndarray,
     q_a_star_next: jnp.ndarray,
@@ -141,6 +109,7 @@ def coherent_q_loss(
 ):
     assert completion_mask.dtype == bool
     assert continuation_mask.dtype == bool
+    assert q.shape == rewards.shape == q_a_star_next.shape
     # TODO: check boundaries
 
     batch_size, seq_len = rewards.shape
@@ -154,50 +123,27 @@ def coherent_q_loss(
         completion_mask,
         discount,
     )
+
+    diag_i, diag_j = jnp.diag_indices(seq_len)
+    target_q_one_step = target_q[:, diag_i, diag_j]
+    one_step_loss = jnp.mean((q - target_q_one_step) ** 2)
     
-    # The unbatched version of the valid q mask specifies invalidity due to
-    # computing variable length things in a rectangular batch, and is constant
-    # across the batch dim. We instantiate it separately to keep the batch
-    # indexing when doing pairwise comparisons.
-    valid_q_mask_seq = construct_valid_q_mask(seq_len)
     valid_q_mask_batch = construct_valid_q_mask_batch(continuation_mask)
-    assert valid_q_mask_seq.dtype == bool
     assert valid_q_mask_batch.dtype == bool
-
-    # Compute one-step TD loss based on the difference between q and target_q
-    one_step_loss = jnp.sum(
-        jnp.where(
-            valid_q_mask_batch,
-            (q - target_q) ** 2,
-            0.0,
-        )
-    ) / jnp.sum(valid_q_mask_batch)
-
-    # Compute pairwise loss between each q value across the sequence.
-    q_flat = rearrange(q, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
-    target_q_flat = rearrange(target_q, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
-    valid_flat = rearrange(valid_q_mask_batch, "batch seq_obs seq_act -> batch (seq_obs seq_act)")
-
-    i, j = jnp.triu_indices(seq_len * seq_len, k=1)
-    diffs_valid = valid_flat[:, i] & valid_flat[:, j]
-
-    diffs = q_flat[:, i] - q_flat[:, j]
-    target_diffs = target_q_flat[:, i] - target_q_flat[:, j]
-
-    pairwise_loss = jnp.sum(
-        jnp.where(
-            diffs_valid,
-            (diffs - target_diffs) ** 2,
-            0.0,
-        )
-    ) / jnp.maximum(jnp.sum(diffs_valid), 1)
 
     # For any given observation, Q functions with fewer parametrized actions
     # should be greater. This is because taking the optimal policy earlier will
     # result in a higher (or equal) utility than taking any actual sequence of
     # actions.
-    diffs = q[:, :, 1:] - q[:, :, :-1]
-    valid_diffs = valid_q_mask_batch[:, :, 1:] & valid_q_mask_batch[:, :, :-1]
+    q_expand = repeat(
+        q,
+        "batch seq_obs -> batch seq_obs seq_act",
+        seq_act=seq_len,
+    )
+    diffs = q_expand - target_q
+    diffs_i, diffs_j = jnp.triu_indices(seq_len, k=1)
+    diffs = diffs[:, diffs_i, diffs_j]
+    valid_diffs = valid_q_mask_batch[:, diffs_i, diffs_j]
     inequality_loss = jnp.sum(
         jnp.where(
             valid_diffs,
@@ -205,21 +151,7 @@ def coherent_q_loss(
             0.0,
         )
     ) / jnp.maximum(jnp.sum(valid_diffs), 1)
-
-    return one_step_loss + pairwise_loss + inequality_loss
-
-def get_action_predict_pos(seq_len: int) -> jnp.ndarray:
-    # This is the index of the action being predicted with respect to each
-    # observation for positional embeddings when computing multi action q values
-    act_predict_idx = jnp.maximum(
-        repeat(
-            jnp.arange(seq_len), 
-            "seq_act -> seq_obs seq_act", 
-            seq_obs=seq_len
-        ) - jnp.arange(seq_len)[:, None]
-    , 0)
-    assert act_predict_idx.shape == (seq_len, seq_len)
-    return act_predict_idx
+    return one_step_loss + inequality_loss
     
 
 if __name__ == "__main__":
@@ -277,22 +209,10 @@ if __name__ == "__main__":
     # print("valid q mask batch")
     # print(construct_valid_q_mask_batch(continuation_mask).astype(int))
 
-    action_predict_pos = get_action_predict_pos(3)
-    print("action predict idx")
-    print(action_predict_pos)
-
     q = jnp.array(
         [
-            [
-                [11, 12, 13],
-                [13, 15, 17],
-                [17, 20, 23],
-            ],
-            [
-                [23, 27, 31],
-                [36, 41, 46],
-                [42, 48, 54],
-            ],
+            [11, 12, 13],
+            [42, 48, 54],
         ]
     )
     q_loss = coherent_q_loss(
