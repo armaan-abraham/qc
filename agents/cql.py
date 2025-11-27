@@ -536,7 +536,7 @@ def get_config():
 
             # Critic
             d_model_observation=256,
-            d_model_action=64,
+            d_model_action=128,
             num_layers=4,
             num_heads=4,
 
