@@ -203,7 +203,7 @@ class CQLAgent(flax.struct.PyTreeNode):
                 "batch sample obs_dim -> (batch sample) 1 obs_dim",
             )
         
-            q = self.network.select("critic")(observations_seq, actions_seq, multi_action=False)
+            q = self.network.select("critic")(observations_seq, actions=actions_seq)
             q = rearrange(
                 q,
                 "(batch sample) 1 -> batch sample",
