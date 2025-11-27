@@ -144,14 +144,27 @@ def coherent_q_loss(
     diffs_i, diffs_j = jnp.triu_indices(seq_len, k=1)
     diffs = diffs[:, diffs_i, diffs_j]
     valid_diffs = valid_q_mask_batch[:, diffs_i, diffs_j]
-    inequality_loss = jnp.sum(
+    cross_hinge_loss = jnp.sum(
         jnp.where(
             valid_diffs,
             jnp.maximum(diffs, 0.0) ** 2,
             0.0,
         )
     ) / jnp.maximum(jnp.sum(valid_diffs), 1)
-    return one_step_loss + inequality_loss
+
+    # At any given observation, the Q function for the optimal action should be
+    # larger than that for the observed action
+    self_hinge_diffs = q[:, 1:] - q_a_star_next[:, :-1]
+    valid = continuation_mask[:, :-1]
+    self_hinge_loss = jnp.sum(
+        jnp.where(
+            valid,
+            jnp.maximum(self_hinge_diffs, 0.0) ** 2,
+            0.0,
+        )
+    ) / jnp.maximum(jnp.sum(valid), 1)
+
+    return one_step_loss + cross_hinge_loss + self_hinge_loss
     
 
 if __name__ == "__main__":
