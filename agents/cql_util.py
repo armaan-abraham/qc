@@ -10,13 +10,6 @@ def get_utils(
 ):
     """Termination mask is 1 where episode terminates (not including episode
     boundaries that are not terminations)."""
-    print("Get utils")
-    print("rewards")
-    print(rewards)
-    print("q_next")
-    print(q_next)
-    print("completion_mask")
-    print(completion_mask)
 
     # Compute reward for every multi action q function
     batch_size, seq_len = rewards.shape
@@ -138,8 +131,6 @@ def coherent_q_loss(
     one_step_loss = jnp.mean((q - target_q_one_step) ** 2)
     
     valid_q_mask_batch = construct_valid_q_mask_batch(continuation_mask)
-    print("valid q mask")
-    print(valid_q_mask_batch)
     assert valid_q_mask_batch.dtype == bool
 
     # For any given observation, Q functions with fewer parametrized actions
@@ -151,16 +142,10 @@ def coherent_q_loss(
         "batch seq_obs -> batch seq_obs seq_act",
         seq_act=seq_len,
     )
-    print("rollouts q a star")
-    print(rollouts_q_a_star)
     diffs = rollouts_q_a_star - q_expand
-    print("diffs")
-    print(diffs)
     diffs_i, diffs_j = jnp.triu_indices(seq_len, k=1)
     diffs = diffs[:, diffs_i, diffs_j]
     valid_diffs = valid_q_mask_batch[:, diffs_i, diffs_j]
-    print("valid diffs")
-    print(valid_diffs)
     upward_ineq_loss = jnp.sum(
         jnp.where(
             valid_diffs,
@@ -189,8 +174,6 @@ def coherent_q_loss(
         completion_mask[:, 1:-1],
         discount,
     )
-    print("rollouts q")
-    print(rollouts_q)
     # This is the utility for starting at the indexed observation and following
     # the optimal policy
     q_a_star_next_expand = repeat(
@@ -198,11 +181,7 @@ def coherent_q_loss(
         "batch seq_obs -> batch seq_obs seq_act",
         seq_act=seq_len-2
     )
-    print("q a star next expand")
-    print(q_a_star_next_expand)
     diffs = rollouts_q - q_a_star_next_expand
-    print("diffs")
-    print(diffs)
     # The valid mask invalidates after discontinuations because for computing q
     # a star values, we only need the next observation which is provided at the
     # same index for each observation. However, here we are actually using the
@@ -215,8 +194,6 @@ def coherent_q_loss(
     # this extra shift, but then we wouldn't be able to do the standard one-step
     # backup for every transition.
     valid_diffs = valid_q_mask_batch[:, 1:-1, 1:-1] & valid_q_mask_batch[:, 1:-1, 2:] & continuation_mask[:, :-2, None]
-    print("valid diffs")
-    print(valid_diffs)
     downward_ineq_loss_cross = jnp.sum(
         jnp.where(
             valid_diffs,
@@ -224,19 +201,13 @@ def coherent_q_loss(
             0,
         )
     ) / jnp.maximum(jnp.sum(valid_diffs), 1)
-    print("downward ineq loss cross")
-    print(downward_ineq_loss_cross)
 
     # The above loss does not include comparisons of q_a_star and q at the same
     # observation, so we compute that separately. At any given observation, the
     # Q function for the optimal action should be larger than that for the
     # observed action.
     same_obs_diffs = q[:, 1:] - q_a_star_next[:, :-1]
-    print("same obs diff")
-    print(same_obs_diffs)
     valid = continuation_mask[:, :-1]
-    print("valid")
-    print(valid)
     downward_ineq_loss_same = jnp.sum(
         jnp.where(
             valid,
@@ -244,8 +215,6 @@ def coherent_q_loss(
             0.0,
         )
     ) / jnp.maximum(jnp.sum(valid), 1)
-    print("downward ineq loss same")
-    print(downward_ineq_loss_same)
     downward_ineq_loss = downward_ineq_loss_cross + downward_ineq_loss_same
 
     # Upward inequality loss pushes q values up, downward pushes them down, and
