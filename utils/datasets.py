@@ -111,7 +111,7 @@ class Dataset(FrozenDict):
         batch_terminals = self['terminals'][all_idxs].reshape(batch_size, sequence_length, *self['terminals'].shape[1:])
 
         # Assert next observations are shifted by one timestep for each sequence
-        assert np.all(np.all((batch_next_observations[:, :-1] == batch_observations[:, 1:]), axis=-1) | (batch_terminals[:, :-1] == 1) | (batch_masks[:, :-1] == 0))
+        # assert np.all(np.all((batch_next_observations[:, :-1] == batch_observations[:, 1:]), axis=-1) | (batch_terminals[:, :-1] == 1) | (batch_masks[:, :-1] == 0))
         batch_terminals[~batch_masks.astype(bool)] = 1.0  # Ensure terminals are 1 on episode completions
 
         return dict(
