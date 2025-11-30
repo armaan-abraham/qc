@@ -301,7 +301,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         else:
             optimizer = optax.adam(learning_rate=config['lr'])
 
-        if config["max_grad_norm"] is not None:
+        if config["max_grad_norm"] != -1.:
             network_tx = optax.chain(
                 optax.clip_by_global_norm(config['max_grad_norm']),
                 optimizer,
@@ -342,7 +342,7 @@ def get_config():
 
             tau=0.005,  # Target network update rate.
             weight_decay=1e-3,
-            max_grad_norm=None,  # Maximum gradient norm for clipping (None to disable).
+            max_grad_norm=-1.,  # Maximum gradient norm for clipping (-1 to disable).
             discount=0.99,  # Discount factor.
             lr=3e-4,  # Learning rate.
             batch_size=256,
