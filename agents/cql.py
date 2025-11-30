@@ -297,9 +297,18 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         network_def = ModuleDict(networks)
         if config["weight_decay"] > 0.:
-            network_tx = optax.adamw(learning_rate=config['lr'], weight_decay=config["weight_decay"])
+            optimizer = optax.adamw(learning_rate=config['lr'], weight_decay=config["weight_decay"])
         else:
-            network_tx = optax.adam(learning_rate=config['lr'])
+            optimizer = optax.adam(learning_rate=config['lr'])
+
+        if config["max_grad_norm"] is not None:
+            network_tx = optax.chain(
+                optax.clip_by_global_norm(config['max_grad_norm']),
+                optimizer,
+            )
+        else:
+            network_tx = optimizer
+
         network_params = network_def.init(init_rng, **network_args)['params']
         network = TrainState.create(network_def, network_params, tx=network_tx)
 
@@ -333,6 +342,7 @@ def get_config():
 
             tau=0.005,  # Target network update rate.
             weight_decay=1e-3,
+            max_grad_norm=None,  # Maximum gradient norm for clipping (None to disable).
             discount=0.99,  # Discount factor.
             lr=3e-4,  # Learning rate.
             batch_size=256,
