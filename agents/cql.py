@@ -47,6 +47,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             completion_mask=~batch['masks'].astype(bool),
             continuation_mask=~batch['terminals'].astype(bool),
             discount=self.config['discount'],
+            ineq_weight=self.config['ineq_loss_weight'],
         )
         return q_loss, {
             'critic_loss': q_loss,
@@ -333,6 +334,7 @@ def get_config():
 
             # Critic
             critic_hidden_dims=(512, 512, 512, 512),
+            ineq_loss_weight=1.0,
 
             # Actor
             actor_type='gaussian', # gaussian or flow
