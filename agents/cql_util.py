@@ -99,7 +99,6 @@ def construct_valid_q_mask_batch(continuation_mask: jnp.ndarray) -> jnp.ndarray:
 
     return result
 
-
 def coherent_q_loss(
     q: jnp.ndarray,
     q_a_star_next: jnp.ndarray,
@@ -145,7 +144,11 @@ def coherent_q_loss(
             seq_act=seq_len,
         )
         diffs = rollouts_q_a_star - q_expand
-        diffs = diffs.at[~valid_q_mask_batch].set(-jnp.inf)
+        diffs = jnp.where(
+            valid_q_mask_batch,
+            diffs,
+            -jnp.inf,
+        )
         diffs_i, diffs_j = jnp.tril_indices(seq_len)
         diffs = diffs.at[:, diffs_i, diffs_j].set(-jnp.inf)
         diffs_max = reduce(
@@ -206,7 +209,11 @@ def coherent_q_loss(
             # this extra shift, but then we wouldn't be able to do the standard one-step
             # backup for every transition.
             valid_diffs = valid_q_mask_batch[:, 1:-1, 1:-1] & valid_q_mask_batch[:, 1:-1, 2:] & continuation_mask[:, :-2, None]
-            diffs = diffs.at[~valid_diffs].set(-jnp.inf)
+            diffs = jnp.where(
+                valid_diffs,
+                diffs,
+                -jnp.inf,
+            )
             diffs_max = reduce(
                 diffs,
                 "batch seq_obs seq_act -> batch seq_act",
