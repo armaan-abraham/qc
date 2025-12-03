@@ -16,6 +16,7 @@ def make_env(env_name):
 def get_dataset(
     env,
     env_name,
+    discount,
 ):
     """Make D4RL dataset.
 
@@ -49,6 +50,7 @@ def get_dataset(
     terminals[-1] = 1
 
     return Dataset.create(
+        discount=discount,
         observations=dataset['observations'].astype(np.float32),
         actions=dataset['actions'].astype(np.float32),
         next_observations=dataset['next_observations'].astype(np.float32),

@@ -88,7 +88,7 @@ class FrameStackWrapper(gymnasium.Wrapper):
         return self.get_observation(), reward, terminated, truncated, info
 
 
-def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
+def make_env_and_datasets(env_name, discount, frame_stack=None, action_clip_eps=1e-5):
     """Make offline RL environment and datasets.
 
     Args:
@@ -106,15 +106,15 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
         eval_env = ogbench.make_env_and_datasets(env_name, env_only=True)
         env = EpisodeMonitor(env, filter_regexes=['.*privileged.*', '.*proprio.*'])
         eval_env = EpisodeMonitor(eval_env, filter_regexes=['.*privileged.*', '.*proprio.*'])
-        train_dataset = Dataset.create(**train_dataset)
-        val_dataset = Dataset.create(**val_dataset)
+        train_dataset = Dataset.create(discount=discount, **train_dataset)
+        val_dataset = Dataset.create(discount=discount, **val_dataset)
     elif 'antmaze' in env_name and ('diverse' in env_name or 'play' in env_name or 'umaze' in env_name):
         # D4RL AntMaze.
         from envs import d4rl_utils
 
         env = d4rl_utils.make_env(env_name)
         eval_env = d4rl_utils.make_env(env_name)
-        dataset = d4rl_utils.get_dataset(env, env_name)
+        dataset = d4rl_utils.get_dataset(env, env_name, discount=discount)
         train_dataset, val_dataset = dataset, None
     elif 'pen' in env_name or 'hammer' in env_name or 'relocate' in env_name or 'door' in env_name:
         # D4RL Adroit.
@@ -123,7 +123,7 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
 
         env = d4rl_utils.make_env(env_name)
         eval_env = d4rl_utils.make_env(env_name)
-        dataset = d4rl_utils.get_dataset(env, env_name)
+        dataset = d4rl_utils.get_dataset(env, env_name, discount=discount)
         train_dataset, val_dataset = dataset, None
     elif env_name.startswith("lift") or env_name.startswith("can") or env_name.startswith("square") or \
         env_name.startswith("transport") or env_name.startswith("tool_hang"):

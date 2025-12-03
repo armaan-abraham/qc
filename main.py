@@ -76,6 +76,7 @@ def main(_):
         json.dump(flag_dict, f)
 
     config = FLAGS.agent
+    discount = FLAGS.discount
     
     # data loading
     if FLAGS.ogbench_dataset_dir is not None:
@@ -92,7 +93,7 @@ def main(_):
             compact_dataset=False,
         )
     else:
-        env, eval_env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name)
+        env, eval_env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, discount=discount)
 
     # house keeping
     random.seed(FLAGS.seed)
@@ -101,7 +102,6 @@ def main(_):
     online_rng, rng = jax.random.split(jax.random.PRNGKey(FLAGS.seed), 2)
     log_step = 0
     
-    discount = FLAGS.discount
     config["horizon_length"] = FLAGS.horizon_length
 
     # handle dataset
@@ -113,10 +113,11 @@ def main(_):
             - convert to action chunked dataset
         """
 
-        ds = Dataset.create(**ds)
+        ds = Dataset.create(discount=discount, **ds)
         if FLAGS.dataset_proportion < 1.0:
             new_size = int(len(ds['masks']) * FLAGS.dataset_proportion)
             ds = Dataset.create(
+                discount=discount,
                 **{k: v[:new_size] for k, v in ds.items()}
             )
         
@@ -124,19 +125,19 @@ def main(_):
             penalty_rewards = ds["rewards"] - 1.0
             ds_dict = {k: v for k, v in ds.items()}
             ds_dict["rewards"] = penalty_rewards
-            ds = Dataset.create(**ds_dict)
+            ds = Dataset.create(discount=discount, **ds_dict)
         
         if FLAGS.sparse:
             # Create a new dataset with modified rewards instead of trying to modify the frozen one
             sparse_rewards = (ds["rewards"] != 0.0) * -1.0
             ds_dict = {k: v for k, v in ds.items()}
             ds_dict["rewards"] = sparse_rewards
-            ds = Dataset.create(**ds_dict)
+            ds = Dataset.create(discount=discount, **ds_dict)
 
         return ds
     
     train_dataset = process_train_dataset(train_dataset)
-    example_batch = train_dataset.sample_contiguous(config['batch_size'], sequence_length=FLAGS.horizon_length)
+    example_batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length)
     
     agent_class = agents[config['agent_name']]
     agent = agent_class.create(
@@ -176,7 +177,7 @@ def main(_):
             )
             train_dataset = process_train_dataset(train_dataset)
 
-        batch = train_dataset.sample_contiguous(config['batch_size'], sequence_length=FLAGS.horizon_length)
+        batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length)
 
         agent, offline_info = agent.update(batch)
 
@@ -210,6 +211,8 @@ def main(_):
     
     action_queue = []
     action_dim = example_batch["actions"].shape[-1]
+
+    curr_traj = []
 
     # Online RL
     update_info = {}
@@ -271,17 +274,19 @@ def main(_):
             masks=1.0 - terminated,
             next_observations=next_ob,
         )
-        replay_buffer.add_transition(transition)
+        curr_traj.append(transition)
         
         # done
         if done:
+            replay_buffer.add_trajectory(curr_traj, discount=discount)
+            curr_traj = []
             ob, _ = env.reset()
             action_queue = []  # reset the action queue
         else:
             ob = next_ob
 
         if i >= FLAGS.start_training:
-            batch = replay_buffer.sample_contiguous(config['batch_size'] * FLAGS.utd_ratio, 
+            batch = replay_buffer.sample_in_trajectories(config['batch_size'] * FLAGS.utd_ratio, 
                         sequence_length=FLAGS.horizon_length)
             batch = jax.tree.map(lambda x: x.reshape((
                 FLAGS.utd_ratio, config["batch_size"]) + x.shape[1:]), batch)

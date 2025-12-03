@@ -83,7 +83,7 @@ def _check_dataset_exists(env_name):
     
     return download_folder
 
-def get_dataset(env, env_name):
+def get_dataset(env, env_name, discount):
     dataset_path = _check_dataset_exists(env_name)
 
     rm_dataset = h5py.File(dataset_path, "r")
@@ -128,6 +128,7 @@ def get_dataset(env, env_name):
         next_observations.append(next_obs.astype(np.float32))
     
     return Dataset.create(
+        discount=discount,
         observations=np.concatenate(observations, axis=0),
         actions=np.concatenate(actions, axis=0),
         rewards=np.concatenate(rewards, axis=0),

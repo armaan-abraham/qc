@@ -61,6 +61,10 @@ class Dataset(FrozenDict):
             **fields: Keys and values of the dataset.
         """
         data = fields
+        if 'utils_to_terminals' in data:
+            del data['utils_to_terminals']
+        if 'times_to_terminals' in data:
+            del data['times_to_terminals']
 
         # Set terminals = 1 where masks = 0
         data['terminals'] = np.where(data['masks'] == 0, 1.0, data['terminals']).astype(data['terminals'].dtype)
