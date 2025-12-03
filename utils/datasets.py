@@ -11,39 +11,74 @@ def get_size(data):
     sizes = jax.tree_util.tree_map(lambda arr: len(arr), data)
     return max(jax.tree_util.tree_leaves(sizes))
 
-
-@partial(jax.jit, static_argnames=('padding',))
-def random_crop(img, crop_from, padding):
-    """Randomly crop an image.
-
-    Args:
-        img: Image to crop.
-        crop_from: Coordinates to crop from.
-        padding: Padding size.
-    """
-    padded_img = jnp.pad(img, ((padding, padding), (padding, padding), (0, 0)), mode='edge')
-    return jax.lax.dynamic_slice(padded_img, crop_from, img.shape)
-
-
-@partial(jax.jit, static_argnames=('padding',))
-def batched_random_crop(imgs, crop_froms, padding):
-    """Batched version of random_crop."""
-    return jax.vmap(random_crop, (0, 0, None))(imgs, crop_froms, padding)
-
+def get_pair_rel_utils(utils_to_terminals, times_to_terminals, discount: float):
+    assert utils_to_terminals.shape == times_to_terminals.shape
+    assert utils_to_terminals.ndim == 2
+    batch_size, seq_len = utils_to_terminals.shape
+    rel_times = times_to_terminals[:, :, None] - times_to_terminals[:, None, :]
+    assert rel_times.shape == (batch_size, seq_len, seq_len)
+    print("Relative times:")
+    print(rel_times)
+    later_coeffs = discount ** jnp.abs(rel_times)
+    print("Later coefficients:")
+    print(later_coeffs)
+    util_diffs = jnp.where(
+        rel_times > 0,
+        utils_to_terminals[:, :, None] - later_coeffs * utils_to_terminals[:, None, :],
+        0.0,
+    )
+    valid_mask = rel_times > 0
+    print("Utility differences:")
+    print(util_diffs)
+    print("Valid mask:")
+    print(valid_mask.astype(np.int32))
+    return util_diffs, valid_mask
 
 class Dataset(FrozenDict):
     """Dataset class."""
 
     @classmethod
-    def create(cls, freeze=True, **fields):
+    def create(cls, discount, freeze=True, **fields):
         """Create a dataset from the fields.
 
         Args:
+            discount: Discount factor for computing rewards to go.
             freeze: Whether to freeze the arrays.
             **fields: Keys and values of the dataset.
         """
         data = fields
-        assert 'observations' in data
+
+        # Set terminals = 1 where masks = 0
+        data['terminals'] = np.where(data['masks'] == 0, 1.0, data['terminals']).astype(data['terminals'].dtype)
+
+        # Set the final transition to a terminal
+        data['terminals'][-1] = 1.0
+
+        print("Terminals after adjustment:")
+        print(data['terminals'])
+
+
+        # Compute discounted sum of rewards to the next terminal. These are NOT
+        # valid unless used to compute utils between transitions on a relative
+        # basis, because these are relative to terminals, not episode
+        # completions.
+        rewards = data['rewards']
+        utils_to_terminals = np.zeros_like(rewards)
+        util_to_terminal = 0.0
+        times_to_terminal = np.zeros_like(rewards)
+        next_terminal_idx = len(rewards) - 1
+        for t_idx in range(len(rewards) - 1, -1, -1):
+            if data['terminals'][t_idx] > 0:
+                next_terminal_idx = t_idx
+            util_to_terminal = rewards[t_idx] + discount * util_to_terminal * (1 - data['terminals'][t_idx])
+            utils_to_terminals[t_idx] = util_to_terminal
+            times_to_terminal[t_idx] = next_terminal_idx - t_idx
+        data['utils_to_terminals'] = utils_to_terminals
+        print("Utils to terminals:")
+        print(data['utils_to_terminals'])
+        data['times_to_terminals'] = times_to_terminal
+        print("Times to terminals:")
+        print(data['times_to_terminals'])
         if freeze:
             jax.tree_util.tree_map(lambda arr: arr.setflags(write=False), data)
         return cls(data)
@@ -51,251 +86,155 @@ class Dataset(FrozenDict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.size = get_size(self._dict)
-        self.frame_stack = None  # Number of frames to stack; set outside the class.
-        self.p_aug = None  # Image augmentation probability; set outside the class.
-        self.return_next_actions = False  # Whether to additionally return next actions; set outside the class.
 
-        # Compute terminal and initial locations.
+        # Store terminal locations for sampling within episodes
         self.terminal_locs = np.nonzero(self['terminals'] > 0)[0]
-        self.initial_locs = np.concatenate([[0], self.terminal_locs[:-1] + 1])
+        print("Terminal locations:")
+        print(self.terminal_locs)
 
-    def get_random_idxs(self, num_idxs):
-        """Return `num_idxs` random indices."""
-        return np.random.randint(self.size, size=num_idxs)
-
-    def sample(self, batch_size: int, idxs=None):
-        """Sample a batch of transitions."""
-        if idxs is None:
-            idxs = self.get_random_idxs(batch_size)
-        batch = self.get_subset(idxs)
-        if self.frame_stack is not None:
-            # Stack frames.
-            initial_state_idxs = self.initial_locs[np.searchsorted(self.initial_locs, idxs, side='right') - 1]
-            obs = []  # Will be [ob[t - frame_stack + 1], ..., ob[t]].
-            next_obs = []  # Will be [ob[t - frame_stack + 2], ..., ob[t], next_ob[t]].
-            for i in reversed(range(self.frame_stack)):
-                # Use the initial state if the index is out of bounds.
-                cur_idxs = np.maximum(idxs - i, initial_state_idxs)
-                obs.append(jax.tree_util.tree_map(lambda arr: arr[cur_idxs], self['observations']))
-                if i != self.frame_stack - 1:
-                    next_obs.append(jax.tree_util.tree_map(lambda arr: arr[cur_idxs], self['observations']))
-            next_obs.append(jax.tree_util.tree_map(lambda arr: arr[idxs], self['next_observations']))
-
-            batch['observations'] = jax.tree_util.tree_map(lambda *args: np.concatenate(args, axis=-1), *obs)
-            batch['next_observations'] = jax.tree_util.tree_map(lambda *args: np.concatenate(args, axis=-1), *next_obs)
-        if self.p_aug is not None:
-            # Apply random-crop image augmentation.
-            if np.random.rand() < self.p_aug:
-                self.augment(batch, ['observations', 'next_observations'])
-        return batch
-    
-    def sample_contiguous(self, batch_size, sequence_length):
-        """Sample a batch of sequences, possibly crossing episode boundaries.
-        Unlike other sampling functions, this returns state, action, reward
-        arrays as contiguous blocks without separate next states and actions.
-        """
-        idxs = np.random.randint(self.size - sequence_length, size=batch_size)
-        
-        data = {k: v[idxs] for k, v in self.items()}
-
-        # Pre-compute all required indices
-        all_idxs = idxs[:, None] + np.arange(sequence_length)[None, :]  # (batch_size, sequence_length)
-        all_idxs = all_idxs.flatten() 
-
-        # Batch fetch data to avoid loops
-        batch_observations = self['observations'][all_idxs].reshape(batch_size, sequence_length, *self['observations'].shape[1:])
-        batch_next_observations = self['next_observations'][all_idxs].reshape(batch_size, sequence_length, *self['next_observations'].shape[1:])
-        batch_actions = self['actions'][all_idxs].reshape(batch_size, sequence_length, *self['actions'].shape[1:])
-        batch_rewards = self['rewards'][all_idxs].reshape(batch_size, sequence_length, *self['rewards'].shape[1:])
-        batch_masks = self['masks'][all_idxs].reshape(batch_size, sequence_length, *self['masks'].shape[1:])
-        batch_terminals = self['terminals'][all_idxs].reshape(batch_size, sequence_length, *self['terminals'].shape[1:])
-
-        # Assert next observations are shifted by one timestep for each sequence
-        assert np.all(np.all((batch_next_observations[:, :-1] == batch_observations[:, 1:]), axis=-1) | (batch_terminals[:, :-1] == 1) | (batch_masks[:, :-1] == 0))
-        batch_terminals[~batch_masks.astype(bool)] = 1.0  # Ensure terminals are 1 on episode completions
-
-        return dict(
-            observations=batch_observations,
-            next_observations=batch_next_observations,
-            actions=batch_actions,
-            masks=batch_masks,
-            rewards=batch_rewards,
-            terminals=batch_terminals,
-        )
+        # Store trajectory start locations
+        self.start_locs = np.concatenate(([0], self.terminal_locs[:-1] + 1))
+        print("Start locations:")
+        print(self.start_locs)
 
 
-    def sample_sequence(self, batch_size, sequence_length, discount):
-        idxs = np.random.randint(self.size - sequence_length + 1, size=batch_size)
-        
-        data = {k: v[idxs] for k, v in self.items()}
+    def sample_in_episodes(self, batch_size: int, sequence_length: int):
+        """Sample transitions and return a batch of shape [batch_size, sequence_length, ...], 
+        where all transitions within a sequence are from the same episode.
+        Episodes are chosen proportionally to their length."""
 
-        # Pre-compute all required indices
-        all_idxs = idxs[:, None] + np.arange(sequence_length)[None, :]  # (batch_size, sequence_length)
-        all_idxs = all_idxs.flatten()
-        
-        # Batch fetch data to avoid loops
-        batch_observations = self['observations'][all_idxs].reshape(batch_size, sequence_length, *self['observations'].shape[1:])
-        batch_next_observations = self['next_observations'][all_idxs].reshape(batch_size, sequence_length, *self['next_observations'].shape[1:])
-        batch_actions = self['actions'][all_idxs].reshape(batch_size, sequence_length, *self['actions'].shape[1:])
-        batch_rewards = self['rewards'][all_idxs].reshape(batch_size, sequence_length, *self['rewards'].shape[1:])
-        batch_masks = self['masks'][all_idxs].reshape(batch_size, sequence_length, *self['masks'].shape[1:])
-        batch_terminals = self['terminals'][all_idxs].reshape(batch_size, sequence_length, *self['terminals'].shape[1:])
-        
-        # Calculate next_actions
-        next_action_idxs = np.minimum(all_idxs + 1, self.size - 1)
-        batch_next_actions = self['actions'][next_action_idxs].reshape(batch_size, sequence_length, *self['actions'].shape[1:])
-        
-        # Use vectorized operations to calculate cumulative rewards and masks
-        rewards = np.zeros((batch_size, sequence_length), dtype=float)
-        masks = np.ones((batch_size, sequence_length), dtype=float)
-        terminals = np.zeros((batch_size, sequence_length), dtype=float)
-        valid = np.ones((batch_size, sequence_length), dtype=float)
-        
-        # Vectorized calculation
-        rewards[:, 0] = batch_rewards[:, 0].squeeze()
-        masks[:, 0] = batch_masks[:, 0].squeeze()
-        terminals[:, 0] = batch_terminals[:, 0].squeeze()
-        
-        discount_powers = discount ** np.arange(sequence_length)
-        for i in range(1, sequence_length):
-            rewards[:, i] = rewards[:, i-1] + batch_rewards[:, i].squeeze() * discount_powers[i]
-            masks[:, i] = np.minimum(masks[:, i-1], batch_masks[:, i].squeeze())
-            terminals[:, i] = np.maximum(terminals[:, i-1], batch_terminals[:, i].squeeze())
-            valid[:, i] = 1.0 - terminals[:, i-1]
-        
-        # Reorganize observations data format - maintain the exact same shape as the original function
-        if len(batch_observations.shape) == 5:  # Visual data: (batch, seq, h, w, c)
-            # Transpose to (batch, h, w, seq, c) format, consistent with the original function
-            observations = batch_observations.transpose(0, 2, 3, 1, 4)  # (batch_size, h, w, sequence_length, c)
-            next_observations = batch_next_observations.transpose(0, 2, 3, 1, 4)  # (batch_size, h, w, sequence_length, c)
-        else:  # State data: maintain (batch, seq, state_dim) shape
-            observations = batch_observations  # (batch_size, sequence_length, state_dim)
-            next_observations = batch_next_observations  # (batch_size, sequence_length, state_dim)
-        
-        # Maintain the 3D shape of actions and next_actions, consistent with the original function
-        actions = batch_actions  # (batch_size, sequence_length, action_dim)
-        next_actions = batch_next_actions  # (batch_size, sequence_length, action_dim)
-        
-        return dict(
-            observations=data['observations'].copy(),
-            full_observations=observations,
-            actions=actions,
-            masks=masks,
-            rewards=rewards,
-            terminals=terminals,
-            valid=valid,
-            next_observations=next_observations,
-            next_actions=next_actions,
-        )
+        episode_lens = self.terminal_locs - self.start_locs + 1
+        print("Episode lengths:")
+        print(episode_lens)
+        episode_probs = episode_lens / episode_lens.sum()
+        print("Episode probabilities:")
+        print(episode_probs)
+        sampled_episodes = np.random.choice(len(episode_lens), size=batch_size, p=episode_probs)
+        print("Sampled episodes:")
+        print(sampled_episodes)
 
-    def get_subset(self, idxs):
-        """Return a subset of the dataset given the indices."""
-        result = jax.tree_util.tree_map(lambda arr: arr[idxs], self._dict)
-        if self.return_next_actions:
-            # WARNING: This is incorrect at the end of the trajectory. Use with caution.
-            result['next_actions'] = self._dict['actions'][np.minimum(idxs + 1, self.size - 1)]
-        return result
+        # Get start locations and lengths for sampled episodes
+        starts = self.start_locs[sampled_episodes]
+        lens = episode_lens[sampled_episodes]
 
-    def augment(self, batch, keys):
-        """Apply image augmentation to the given keys."""
-        padding = 3
-        batch_size = len(batch[keys[0]])
-        crop_froms = np.random.randint(0, 2 * padding + 1, (batch_size, 2))
-        crop_froms = np.concatenate([crop_froms, np.zeros((batch_size, 1), dtype=np.int64)], axis=1)
-        for key in keys:
-            batch[key] = jax.tree_util.tree_map(
-                lambda arr: np.array(batched_random_crop(arr, crop_froms, padding)) if len(arr.shape) == 4 else arr,
-                batch[key],
-            )
+        # Sample random offsets within each episode: [batch_size, sequence_length]
+        offsets = (np.random.random((batch_size, sequence_length)) * lens[:, None]).astype(np.int64)
+
+        # Compute transition indices
+        transition_idxs = starts[:, None] + offsets
+        print("Transition indices:")
+        print(transition_idxs)
+
+        # Index into dataset
+        return jax.tree_util.tree_map(lambda arr: arr[transition_idxs], self._dict)
 
 
-class ReplayBuffer(Dataset):
-    """Replay buffer class.
+# class ReplayBuffer(Dataset):
+#     """Replay buffer class.
 
-    This class extends Dataset to support adding transitions.
-    """
+#     This class extends Dataset to support adding transitions.
+#     """
 
-    @classmethod
-    def create(cls, transition, size):
-        """Create a replay buffer from the example transition.
+#     @classmethod
+#     def create(cls, transition, size):
+#         """Create a replay buffer from the example transition.
 
-        Args:
-            transition: Example transition (dict).
-            size: Size of the replay buffer.
-        """
+#         Args:
+#             transition: Example transition (dict).
+#             size: Size of the replay buffer.
+#         """
 
-        def create_buffer(example):
-            example = np.array(example)
-            return np.zeros((size, *example.shape), dtype=example.dtype)
+#         def create_buffer(example):
+#             example = np.array(example)
+#             return np.zeros((size, *example.shape), dtype=example.dtype)
 
-        buffer_dict = jax.tree_util.tree_map(create_buffer, transition)
-        return cls(buffer_dict)
+#         buffer_dict = jax.tree_util.tree_map(create_buffer, transition)
+#         return cls(buffer_dict)
 
-    @classmethod
-    def create_from_initial_dataset(cls, init_dataset, size):
-        """Create a replay buffer from the initial dataset.
+#     @classmethod
+#     def create_from_initial_dataset(cls, init_dataset, size):
+#         """Create a replay buffer from the initial dataset.
 
-        Args:
-            init_dataset: Initial dataset.
-            size: Size of the replay buffer.
-        """
+#         Args:
+#             init_dataset: Initial dataset.
+#             size: Size of the replay buffer.
+#         """
 
-        def create_buffer(init_buffer):
-            buffer = np.zeros((size, *init_buffer.shape[1:]), dtype=init_buffer.dtype)
-            buffer[: len(init_buffer)] = init_buffer
-            return buffer
+#         def create_buffer(init_buffer):
+#             buffer = np.zeros((size, *init_buffer.shape[1:]), dtype=init_buffer.dtype)
+#             buffer[: len(init_buffer)] = init_buffer
+#             return buffer
 
-        buffer_dict = jax.tree_util.tree_map(create_buffer, init_dataset)
-        dataset = cls(buffer_dict)
-        dataset.size = dataset.pointer = get_size(init_dataset)
-        return dataset
+#         buffer_dict = jax.tree_util.tree_map(create_buffer, init_dataset)
+#         dataset = cls(buffer_dict)
+#         dataset.size = get_size(init_dataset)
+#         dataset.pointer = dataset.size % size
+#         return dataset
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
 
-        self.max_size = get_size(self._dict)
-        self.size = 0
-        self.pointer = 0
+#         self.max_size = get_size(self._dict)
+#         self.size = 0
+#         self.pointer = 0
+#         self.last_transition_terminal = True
 
-    def add_transition(self, transition):
-        """Add a transition to the replay buffer."""
+#     def add_transition(self, transition):
+#         """Add a transition to the replay buffer."""
+#         # When adding new transitions, we will be overwriting old data and thus
+#         # ruining the episode structure. To deal with this, we set the last
+#         # added transition's terminal to 1 always, and if the true terminal was
+#         # 0, set it back to 0 once we add the next transition. When sampling, we
+#         # assume the episode that the pointer overlaps with is invalid.
 
-        def set_idx(buffer, new_element):
-            buffer[self.pointer] = new_element
+#         self.last_transition_terminal = transition['terminals']
+#         assert isinstance(self.last_transition_terminal, float) or isinstance(self.last_transition_terminal, int)
 
-        jax.tree_util.tree_map(set_idx, self._dict, transition)
-        self.pointer = (self.pointer + 1) % self.max_size
-        self.size = max(self.pointer, self.size)
+#         transition['terminals'] = max(1 - transition['masks'], transition['terminals'])
 
-    def clear(self):
-        """Clear the replay buffer."""
-        self.size = self.pointer = 0
+#         def set_idx(buffer, new_element):
+#             if not self.last_transition_terminal:
+#                 prev_pointer = (self.pointer - 1) % self.max_size
+#                 buffer[prev_pointer]['terminals'] = 0.0
+#             self.last_transition_terminal = new_element['terminals']
+#             new_element['terminals'] = 1.0
+#             buffer[self.pointer] = new_element
 
-def add_history(dataset, history_length):
+#         jax.tree_util.tree_map(set_idx, self._dict, transition)
+#         self.pointer = (self.pointer + 1) % self.max_size
+#         self.size = max(self.pointer, self.size)
 
-    size = dataset.size
-    (terminal_locs,) = np.nonzero(dataset['terminals'] > 0)
-    initial_locs = np.concatenate([[0], terminal_locs[:-1] + 1])
-    assert terminal_locs[-1] == size - 1
+#     def clear(self):
+#         """Clear the replay buffer."""
+#         self.size = self.pointer = 0
 
-    idxs = np.arange(size)
-    initial_state_idxs = initial_locs[np.searchsorted(initial_locs, idxs, side='right') - 1]
-    obs_rets = []
-    acts_rets = []
-    for i in reversed(range(1, history_length)):
-        cur_idxs = np.maximum(idxs - i, initial_state_idxs)
-        outside = (idxs - i < initial_state_idxs)[..., None]
-        obs_rets.append(jax.tree_util.tree_map(lambda arr: arr[cur_idxs] * (~outside) + jnp.zeros_like(arr[cur_idxs]) * outside, 
-            dataset['observations']))
-        acts_rets.append(jax.tree_util.tree_map(lambda arr: arr[cur_idxs] * (~outside) + jnp.zeros_like(arr[cur_idxs]) * outside, 
-            dataset['actions']))
-    observation_history, action_history = jax.tree_util.tree_map(lambda *args: np.stack(args, axis=-2), *obs_rets),\
-        jax.tree_util.tree_map(lambda *args: np.stack(args, axis=-2), *acts_rets)
+if __name__ == "__main__":
+    np.random.seed(3)
+    # Simple test
+    data = {
+        'observations': np.arange(6),
+        'next_observations': np.arange(6) + 1,
+        'actions': np.arange(6) * 2,
+        'rewards': np.arange(6) * 0.5 + 1,
+        'masks': np.array(
+            [0, 1, 1, 0, 1, 1]
+        ),
+        'terminals': np.array(
+            [1, 0, 0, 1, 0, 0]
+        ),
+    }
+    print("Initial data:")
+    for k, v in data.items():
+        print(f"{k}:")
+        print(v)
+    print()
 
-    dataset = Dataset(dataset.copy(dict(
-        observation_history=observation_history,
-        action_history=action_history)))
-    
-    return dataset
+    dataset = Dataset.create(discount=0.9, **data)
+    batch = dataset.sample_in_episodes(batch_size=3, sequence_length=4)
+    print("Sampled batch:")
+    print("Utils to terminals:")
+    print(batch['utils_to_terminals'])
+    print("Times to terminals:")
+    print(batch['times_to_terminals'])
 
-
+    pair_rel_utils, valid_mask = get_pair_rel_utils(batch["utils_to_terminals"], batch["times_to_terminals"], discount=0.9)
