@@ -338,17 +338,17 @@ def get_config():
             critic_hidden_dims=(512, 512, 512, 512),
 
             # Actor
-            actor_type='gaussian', # gaussian or flow
-            actor_num_samples=32, # Number of action samples for actor flow
+            actor_type='flow', # gaussian or flow
+            actor_num_samples=4, # Number of action samples for actor flow
             flow_steps=10,  # Number of flow steps.
-            actor_hidden_dims=(512, 512, 512),
+            actor_hidden_dims=(512, 512, 512, 512),
 
             tau=0.005,  # Target network update rate.
             weight_decay=1e-3,
             max_grad_norm=-1.,  # Maximum gradient norm for clipping (-1 to disable).
             discount=0.99,  # Discount factor.
             lr=3e-4,  # Learning rate.
-            batch_size=256,
+            batch_size=128,
 
             bc_alpha=0.0, # Behavioral cloning loss weight.
 

@@ -24,6 +24,7 @@ def distant_coherence_loss(
     completion_mask: jnp.ndarray,
     discount: float,
 ):
+
     batch_size, seq_len = q.shape
 
     pair_rel_utils, pair_rel_times, valid_pair_rel_utils = get_pair_rel_utils(
@@ -125,6 +126,8 @@ def coherent_q_loss(
     completion_mask: jnp.ndarray,
     discount: float,
 ):
+    assert q.ndim == 2
+    assert q.shape == q_a_star_next.shape == rewards.shape == times_to_terminals.shape == utils_to_terminals.shape == completion_mask.shape
     return (
         one_step_bellman_loss(
             q,
