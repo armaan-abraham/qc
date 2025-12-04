@@ -101,8 +101,6 @@ class Dataset(FrozenDict):
         episode_lens = self.terminal_locs - self.start_locs + 1
         episode_probs = episode_lens / episode_lens.sum()
         sampled_episodes = np.random.choice(len(episode_lens), size=batch_size, p=episode_probs)
-        print("Sampled episodes:")
-        print(sampled_episodes)
 
         # Get start locations and lengths for sampled episodes
         starts = self.start_locs[sampled_episodes]
@@ -113,8 +111,6 @@ class Dataset(FrozenDict):
 
         # Compute transition indices
         transition_idxs = starts[:, None] + offsets
-        print("Transition indices:")
-        print(transition_idxs)
 
         # Index into dataset
         return jax.tree_util.tree_map(lambda arr: arr[transition_idxs], self._dict)

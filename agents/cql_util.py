@@ -12,8 +12,6 @@ def one_step_bellman_loss(
     discount: float,
 ):
     targets = rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32))
-    print("one step targets:")
-    print(targets)
     return jnp.mean((q - targets) ** 2)
 
 
@@ -33,12 +31,6 @@ def distant_coherence_loss(
         times_to_terminals,
         discount,
     )  # [batch, seq_len, seq_len]
-    print("pair rel utils:")
-    print(pair_rel_utils)
-    print("pair rel times:")
-    print(pair_rel_times)
-    print("valid pair rel utils:")
-    print(valid_pair_rel_utils.astype(jnp.int32))
 
     # === Lower bound loss ===
 
@@ -53,8 +45,6 @@ def distant_coherence_loss(
         "batch obs_post -> batch obs_pre obs_post",
         obs_pre=seq_len,
     )
-    print("obs post util to go:")
-    print(obs_post_util_to_go)
     obs_post_util_to_go_discount = discount ** jnp.abs(pair_rel_times)
     # print("obs post util to go discount:")
     # print(obs_post_util_to_go_discount)
@@ -65,25 +55,17 @@ def distant_coherence_loss(
     # a lower bound on the expected utility to go for taking action a_i and then
     # following the optimal policy, estimated by Q(s_i, a_i).
     mixed_util_from_obs_pre = pair_rel_utils + obs_post_util_to_go_discount * obs_post_util_to_go
-    print("mixed util from obs pre:")
-    print(mixed_util_from_obs_pre)
     q_obs_pre = repeat(
         q,
         "batch obs_pre -> batch obs_pre obs_post",
         obs_post=seq_len,
     )
-    print("q obs pre:")
-    print(q_obs_pre)
     diffs = mixed_util_from_obs_pre - q_obs_pre
-    # print("diffs:")
-    # print(diffs)
     lower_bound_loss = jnp.where(
         valid_pair_rel_utils,
         jnp.maximum(0.0, diffs),
         0.0,
     ) ** 2 / jnp.maximum(1.0, valid_pair_rel_utils.sum())
-
-    print("=== Upper bound loss ===")
 
 
     # === Upper bound loss ===
@@ -99,28 +81,20 @@ def distant_coherence_loss(
         "batch obs_pre -> batch obs_pre obs_post",
         obs_post=seq_len,
     )) / discount
-    print("rel util:")
-    print(rel_util)
 
     obs_post_q = repeat(
         q,
         "batch obs_post -> batch obs_pre obs_post",
         obs_pre=seq_len,
     )
-    print("obs post q:")
-    print(obs_post_q)
 
     obs_post_q_discount = discount ** (jnp.abs(pair_rel_times) - 1)
-    print("obs post q discount:")
-    print(obs_post_q_discount)
 
     # Element i j for a sequence in the batch is the observed utility between
     # observations i+1 and j plus the expected utility to go from taking action
     # a_j and then following the optimal policy afterward in terms of Q*(s_j,
     # a_j). Q*(s_{i+1}, a*) is an upper bound on this value.
     mixed_util_from_obs_pre = rel_util + obs_post_q * obs_post_q_discount
-    print("mixed util from obs pre:")
-    print(mixed_util_from_obs_pre)
 
     # We don't need to worry about the completion mask here because we will zero
     # out any difference elements where the time of i is not less than the time
@@ -131,11 +105,7 @@ def distant_coherence_loss(
         "batch obs_pre -> batch obs_pre obs_post",
         obs_post=seq_len,
     )
-    print("q a star obs pre:")
-    print(q_a_star_obs_pre)
     diffs = mixed_util_from_obs_pre - q_a_star_obs_pre
-    print("diffs:")
-    print(diffs)
     upper_bound_loss = jnp.where(
         valid_pair_rel_utils,
         jnp.maximum(0.0, diffs),
