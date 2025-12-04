@@ -13,6 +13,7 @@ def get_size(data):
     return max(jax.tree_util.tree_leaves(sizes))
 
 def get_pair_rel_utils(utils_to_terminals, times_to_terminals, discount: float):
+    # Valid for i, j where i occurs before j in the trajectory
     assert utils_to_terminals.shape == times_to_terminals.shape
     assert utils_to_terminals.ndim == 2
     batch_size, seq_len = utils_to_terminals.shape
@@ -25,16 +26,13 @@ def get_pair_rel_utils(utils_to_terminals, times_to_terminals, discount: float):
         0.0,
     )
     valid_mask = rel_times > 0
-    return util_diffs, valid_mask
+    return util_diffs, rel_times, valid_mask
 
-def get_utils_and_times_to_terminals(dataset, discount: float):
+def get_utils_and_times_to_terminals(rewards, terminals, discount: float):
     # Compute discounted sum of rewards to the next terminal. These are NOT
     # valid unless used to compute utils between transitions on a relative
     # basis, because these are relative to terminals, not episode
     # completions.
-    rewards = dataset['rewards']
-    terminals = dataset['terminals']
-
     utils_to_terminals = np.zeros_like(rewards)
     util_to_terminal = 0.0
     times_to_terminals = np.zeros_like(rewards)
@@ -72,7 +70,8 @@ class Dataset(FrozenDict):
         # Set the final transition to a terminal
         data['terminals'][-1] = 1.0
 
-        utils_to_terminals, times_to_terminals = get_utils_and_times_to_terminals(data, discount)
+        utils_to_terminals, times_to_terminals = get_utils_and_times_to_terminals(data['rewards'], data['terminals'], discount)
+
         data['utils_to_terminals'] = utils_to_terminals
         data['times_to_terminals'] = times_to_terminals
         if freeze:
@@ -102,6 +101,8 @@ class Dataset(FrozenDict):
         episode_lens = self.terminal_locs - self.start_locs + 1
         episode_probs = episode_lens / episode_lens.sum()
         sampled_episodes = np.random.choice(len(episode_lens), size=batch_size, p=episode_probs)
+        print("Sampled episodes:")
+        print(sampled_episodes)
 
         # Get start locations and lengths for sampled episodes
         starts = self.start_locs[sampled_episodes]
@@ -112,6 +113,8 @@ class Dataset(FrozenDict):
 
         # Compute transition indices
         transition_idxs = starts[:, None] + offsets
+        print("Transition indices:")
+        print(transition_idxs)
 
         # Index into dataset
         return jax.tree_util.tree_map(lambda arr: arr[transition_idxs], self._dict)
@@ -166,7 +169,7 @@ class ReplayBuffer(Dataset):
         # trajectory, despite the possibility of dividing the trajectory when
         # looping around the buffer. This is fine because these values are only
         # used on a relative basis.
-        utils_to_terminals, times_to_terminals = get_utils_and_times_to_terminals(trajectory, discount)
+        utils_to_terminals, times_to_terminals = get_utils_and_times_to_terminals(trajectory['rewards'], trajectory['terminals'], discount)
         trajectory['utils_to_terminals'] = utils_to_terminals
         trajectory['times_to_terminals'] = times_to_terminals
 
@@ -221,12 +224,20 @@ if __name__ == "__main__":
     print("Times to terminals:")
     print(batch['times_to_terminals'])
 
+    pair_rel_utils, pair_rel_times, valid_mask = get_pair_rel_utils(batch["utils_to_terminals"], batch["times_to_terminals"], discount=0.9)
+    print("Pairwise relative utils:")
+    print(pair_rel_utils)
+    print("Pairwise relative times:")
+    print(pair_rel_times)
+    print("Valid mask:")
+    print(valid_mask)
+
 
     buffer = ReplayBuffer.create_from_initial_dataset(dict(dataset), size=7)
-    print("Initial buffer:")
-    for k, v in buffer._dict.items():
-        print(f"{k}:")
-        print(v)
+    # print("Initial buffer:")
+    # for k, v in buffer._dict.items():
+    #     print(f"{k}:")
+    #     print(v)
     
     num_transitions = 3
     trajectory = [
@@ -240,14 +251,12 @@ if __name__ == "__main__":
         }
         for i in range(num_transitions)
     ]
-    print("Adding trajectory:")
-    print(trajectory)
+    # print("Adding trajectory:")
+    # print(trajectory)
     buffer.add_trajectory(trajectory, discount=discount)
 
-    print("Buffer after adding trajectory:")
-    for k, v in buffer._dict.items():
-        print(f"{k}:")
-        print(v)
+    # print("Buffer after adding trajectory:")
+    # for k, v in buffer._dict.items():
+    #     print(f"{k}:")
+    #     print(v)
 
-
-    # pair_rel_utils, valid_mask = get_pair_rel_utils(batch["utils_to_terminals"], batch["times_to_terminals"], discount=0.9)

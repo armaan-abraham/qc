@@ -2,298 +2,231 @@ import jax
 import jax.numpy as jnp
 from einops import repeat, rearrange, einsum
 
-def get_utils(
+from utils.datasets import get_pair_rel_utils
+
+def one_step_bellman_loss(
+    q: jnp.ndarray,
+    q_a_star_next: jnp.ndarray,
     rewards: jnp.ndarray,
-    q_next: jnp.ndarray,
     completion_mask: jnp.ndarray,
     discount: float,
 ):
-    """Termination mask is 1 where episode terminates (not including episode
-    boundaries that are not terminations)."""
+    targets = rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32))
+    print("one step targets:")
+    print(targets)
+    return jnp.mean((q - targets) ** 2)
 
-    # Compute reward for every multi action q function
-    batch_size, seq_len = rewards.shape
 
-    rewards_by_obs = jnp.concatenate(
-        [
-            rewards,
-            jnp.zeros((batch_size, seq_len)),
-        ],
-        axis=1,
+def distant_coherence_loss(
+    q: jnp.ndarray,
+    q_a_star_next: jnp.ndarray,
+    rewards: jnp.ndarray,
+    times_to_terminals: jnp.ndarray,
+    utils_to_terminals: jnp.ndarray,
+    completion_mask: jnp.ndarray,
+    discount: float,
+):
+    batch_size, seq_len = q.shape
+
+    pair_rel_utils, pair_rel_times, valid_pair_rel_utils = get_pair_rel_utils(
+        utils_to_terminals,
+        times_to_terminals,
+        discount,
+    )  # [batch, seq_len, seq_len]
+    print("pair rel utils:")
+    print(pair_rel_utils)
+    print("pair rel times:")
+    print(pair_rel_times)
+    print("valid pair rel utils:")
+    print(valid_pair_rel_utils.astype(jnp.int32))
+
+    # === Lower bound loss ===
+
+    # Compare earlier q values to relative util + later q(a*)
+
+    # These are the utils at the later observations computed from the
+    # immediately subsequent reward and q(a*). These are the same values that
+    # are used in the one-step Bellman update, repeated for comparison to the
+    # earlier observations.
+    obs_post_util_to_go = repeat(
+        rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32)),
+        "batch obs_post -> batch obs_pre obs_post",
+        obs_pre=seq_len,
     )
-    range_idxs = jnp.arange(seq_len)[:, None] + jnp.arange(seq_len)[None, :]
-    # Index into rewards by obs to get sequences of rewards to sum over for each observation
-    rewards_by_obs = rewards_by_obs[:, range_idxs]
-    assert rewards_by_obs.shape == (batch_size, seq_len, seq_len)
+    print("obs post util to go:")
+    print(obs_post_util_to_go)
+    obs_post_util_to_go_discount = discount ** jnp.abs(pair_rel_times)
+    # print("obs post util to go discount:")
+    # print(obs_post_util_to_go_discount)
 
-    # Multiply each observation-wise reward sequence by discounting coefficients
-    discounts = discount ** jnp.arange(seq_len)
-
-    rewards_by_obs = rewards_by_obs * discounts
-
-    # Discounted reward targets are just cumulative sums
-    target_rewards = jnp.cumsum(rewards_by_obs, axis=-1)
-
-    # Do zero padding trick and discounting for target q values
-    q_a_star_next_pad = jnp.concatenate(
-        [
-            # Q is 0 
-            jnp.where(
-                completion_mask,
-                0.0,
-                q_next,
-            ),
-            jnp.zeros((batch_size, seq_len)),
-        ],
-        axis=-1
+    # Element i j for a sequence in the batch is the observed utility between
+    # observation i and j plus the expected utility to go from taking the
+    # optimal policy starting at observation j in terms of Q(s_j, a*), which is
+    # a lower bound on the expected utility to go for taking action a_i and then
+    # following the optimal policy, estimated by Q(s_i, a_i).
+    mixed_util_from_obs_pre = pair_rel_utils + obs_post_util_to_go_discount * obs_post_util_to_go
+    print("mixed util from obs pre:")
+    print(mixed_util_from_obs_pre)
+    q_obs_pre = repeat(
+        q,
+        "batch obs_pre -> batch obs_pre obs_post",
+        obs_post=seq_len,
     )
-    range_idxs = jnp.arange(seq_len)[:, None] + jnp.arange(seq_len)[None, :]
-    target_q_a_star = q_a_star_next_pad[:, range_idxs]
-    discounts = discount ** (jnp.arange(seq_len) + 1)
-    target_q_a_star = target_q_a_star * discounts
+    print("q obs pre:")
+    print(q_obs_pre)
+    diffs = mixed_util_from_obs_pre - q_obs_pre
+    # print("diffs:")
+    # print(diffs)
+    lower_bound_loss = jnp.where(
+        valid_pair_rel_utils,
+        jnp.maximum(0.0, diffs),
+        0.0,
+    ) ** 2 / jnp.maximum(1.0, valid_pair_rel_utils.sum())
 
-    target_q = target_rewards + target_q_a_star
+    print("=== Upper bound loss ===")
 
-    # Shift over predictions so that the last dimension corresponds to the last
-    # action being predicted
-    src_i, src_j = jnp.triu_indices(seq_len)
-    src_j = seq_len - 1 - src_j
-    target_q_shift = jnp.zeros_like(target_q)
-    dst_i = src_i
-    dst_j = src_j + dst_i
-    target_q = target_q_shift.at[:, dst_i, dst_j].set(target_q[:, src_i, src_j])
+
+    # === Upper bound loss ===
+
+    # Compare earlier q(a*) to observed util + later q values
     
-    return target_q
+    # We are comparing to the earlier q(a*), which are actually one observation
+    # after the one we use to compute the relative utils, so we need to subtract
+    # the reward immediately before the q(a*) observations from the relative
+    # utils and divide by the discount.
+    rel_util = (pair_rel_utils - repeat(
+        rewards,
+        "batch obs_pre -> batch obs_pre obs_post",
+        obs_post=seq_len,
+    )) / discount
+    print("rel util:")
+    print(rel_util)
 
-
-def construct_valid_q_mask(seq_len: int) -> jnp.ndarray:
-    # This is for a single sequence
-    # Construct valid mask for multi-action q values
-    return jnp.triu(jnp.ones((seq_len, seq_len))).astype(bool)
-
-
-def construct_valid_q_mask_batch(continuation_mask: jnp.ndarray) -> jnp.ndarray:
-    batch_size, seq_len = continuation_mask.shape
-    valid_q_mask_base = construct_valid_q_mask(seq_len)
-    valid_q_mask = repeat(
-        valid_q_mask_base,
-        "seq_obs seq_act -> batch seq_obs seq_act",
-        batch=batch_size,
+    obs_post_q = repeat(
+        q,
+        "batch obs_post -> batch obs_pre obs_post",
+        obs_pre=seq_len,
     )
-    continuation_mask_by_obs = repeat(
-        continuation_mask,
-        "batch seq_act -> batch seq_obs seq_act",
-        seq_obs=seq_len,
+    print("obs post q:")
+    print(obs_post_q)
+
+    obs_post_q_discount = discount ** (jnp.abs(pair_rel_times) - 1)
+    print("obs post q discount:")
+    print(obs_post_q_discount)
+
+    # Element i j for a sequence in the batch is the observed utility between
+    # observations i+1 and j plus the expected utility to go from taking action
+    # a_j and then following the optimal policy afterward in terms of Q*(s_j,
+    # a_j). Q*(s_{i+1}, a*) is an upper bound on this value.
+    mixed_util_from_obs_pre = rel_util + obs_post_q * obs_post_q_discount
+    print("mixed util from obs pre:")
+    print(mixed_util_from_obs_pre)
+
+    # We don't need to worry about the completion mask here because we will zero
+    # out any difference elements where the time of i is not less than the time
+    # of j, which means any rows in this repeated result corresponding to
+    # terminals will be invalidated in the mask.
+    q_a_star_obs_pre = repeat(
+        q_a_star_next,
+        "batch obs_pre -> batch obs_pre obs_post",
+        obs_post=seq_len,
     )
-    intersections = valid_q_mask & ~continuation_mask_by_obs
-    # Find index of first True in each row
-    first_true_idx = jnp.argmax(intersections, axis=-1)
-    
-    has_true = jnp.any(intersections, axis=-1)
-    
-    col_indices = jnp.arange(seq_len)
-    
-    # Mask positions after first True (and only if row has a True)
-    mask = (col_indices > first_true_idx[:, :, None]) & has_true[:, :, None]
-    result = jnp.where(mask, 0, valid_q_mask).astype(bool)
+    print("q a star obs pre:")
+    print(q_a_star_obs_pre)
+    diffs = mixed_util_from_obs_pre - q_a_star_obs_pre
+    print("diffs:")
+    print(diffs)
+    upper_bound_loss = jnp.where(
+        valid_pair_rel_utils,
+        jnp.maximum(0.0, diffs),
+        0.0,
+    ) ** 2 / jnp.maximum(1.0, valid_pair_rel_utils.sum())
 
-    return result
-
+    return lower_bound_loss + upper_bound_loss
 
 def coherent_q_loss(
     q: jnp.ndarray,
     q_a_star_next: jnp.ndarray,
     rewards: jnp.ndarray,
+    times_to_terminals: jnp.ndarray,
+    utils_to_terminals: jnp.ndarray,
     completion_mask: jnp.ndarray,
-    continuation_mask: jnp.ndarray,
     discount: float,
 ):
-    assert completion_mask.dtype == bool
-    assert continuation_mask.dtype == bool
-    assert q.shape == rewards.shape == q_a_star_next.shape
-    # TODO: check boundaries
-
-    batch_size, seq_len = rewards.shape
-
-    # These are the bellman-derived values for each multi action q for observed
-    # actions in terms of observed rewards and q values from the next
-    # observation and policy-generated (optimal) action. These have no gradient
-    # flow.
-    rollouts_q_a_star = get_utils(
-        rewards,
-        q_a_star_next,
-        completion_mask,
-        discount,
-    )
-
-    diag_i, diag_j = jnp.diag_indices(seq_len)
-    target_q_one_step = rollouts_q_a_star[:, diag_i, diag_j]
-    loss = jnp.mean((q - target_q_one_step) ** 2)
-    
-
-    if seq_len > 1:
-        valid_q_mask_batch = construct_valid_q_mask_batch(continuation_mask)
-        assert valid_q_mask_batch.dtype == bool
-
-        # For any given observation, Q functions with fewer parametrized actions
-        # should be greater. This is because taking the optimal policy earlier will
-        # result in a higher (or equal) utility than taking any actual sequence of
-        # actions.
-        q_expand = repeat(
+    return (
+        one_step_bellman_loss(
             q,
-            "batch seq_obs -> batch seq_obs seq_act",
-            seq_act=seq_len,
-        )
-        diffs = rollouts_q_a_star - q_expand
-        diffs_i, diffs_j = jnp.triu_indices(seq_len, k=1)
-        diffs = diffs[:, diffs_i, diffs_j]
-        valid_diffs = valid_q_mask_batch[:, diffs_i, diffs_j]
-        upward_ineq_loss = jnp.sum(
-            jnp.where(
-                valid_diffs,
-                jnp.maximum(diffs, 0.0) ** 2,
-                0.0,
-            )
-        ) / jnp.maximum(jnp.sum(valid_diffs), 1)
-
-        # Compare every q value to all previous q star values by chaining two
-        # inequalities for any given observation: 
-        # 1: q(s,a*) > q(s,a)
-        # 2: q(s,a1) > q(s,a1,a2)
-        # Because q(s1,a1,a2) = r12 + gamma * q(s2,a2), then we also know that
-        # q(s1, a1*) > r12 + gamma * q(s2, a2).
-
-        # Compute the utility of starting at observation s and then taking actions
-        # a1...an, [batch seq_obs seq_act-1], where we start at seq_obs and then take
-        # actions up to the action at the corresponding index plus 1.
-
-        # This is the utility for starting at the indexed observation, taking the
-        # actions up to the same index in the action dim, and then taking the action
-        # after that in the actual rollout.
-        rollouts_q = get_utils(
-            rewards[:, 1:-1],
-            q[:, 2:],
-            completion_mask[:, 1:-1],
+            q_a_star_next,
+            rewards,
+            completion_mask,
             discount,
         )
-        # This is the utility for starting at the indexed observation and following
-        # the optimal policy
-        q_a_star_next_expand = repeat(
-            q_a_star_next[:, :-2],
-            "batch seq_obs -> batch seq_obs seq_act",
-            seq_act=seq_len-2
+        + distant_coherence_loss(
+            q,
+            q_a_star_next,
+            rewards,
+            times_to_terminals,
+            utils_to_terminals,
+            completion_mask,
+            discount,
         )
-        diffs = rollouts_q - q_a_star_next_expand
-        # The valid mask invalidates after discontinuations because for computing q
-        # a star values, we only need the next observation which is provided at the
-        # same index for each observation. However, here we are actually using the
-        # next observation by using subsequent indexes in the same observation array
-        # because we're using the corresponding observed actions. This necessitates
-        # the 2: shift. The continuation mask with :-2 indexing comes from the fact
-        # that we have only computed q a star given the next observation array which
-        # is standard for the one-step backup. We could in principle instead compute
-        # q a star values for the observation array, which would allow us to omit
-        # this extra shift, but then we wouldn't be able to do the standard one-step
-        # backup for every transition.
-        valid_diffs = valid_q_mask_batch[:, 1:-1, 1:-1] & valid_q_mask_batch[:, 1:-1, 2:] & continuation_mask[:, :-2, None]
-        downward_ineq_loss_cross = jnp.sum(
-            jnp.where(
-                valid_diffs,
-                jnp.maximum(diffs, 0.0) ** 2,
-                0,
-            )
-        ) / jnp.maximum(jnp.sum(valid_diffs), 1)
+    )
 
-        # The above loss does not include comparisons of q_a_star and q at the same
-        # observation, so we compute that separately. At any given observation, the
-        # Q function for the optimal action should be larger than that for the
-        # observed action.
-        same_obs_diffs = q[:, 1:] - q_a_star_next[:, :-1]
-        valid = continuation_mask[:, :-1]
-        downward_ineq_loss_same = jnp.sum(
-            jnp.where(
-                valid,
-                jnp.maximum(same_obs_diffs, 0.0) ** 2,
-                0.0,
-            )
-        ) / jnp.maximum(jnp.sum(valid), 1)
-        downward_ineq_loss = downward_ineq_loss_cross + downward_ineq_loss_same
 
-        # Upward inequality loss pushes q values up, downward pushes them down, and
-        # one step is the standard bellman loss.
-        loss += upward_ineq_loss + downward_ineq_loss
-
-    return loss
-    
 
 if __name__ == "__main__":
-    # Simple test
-    # seq_len = 4
-    # attn_mask_seq = construct_attn_mask_seq(seq_len)
-    # print(attn_mask_seq)
+    from utils.datasets import Dataset
+    import numpy as np
 
-    rewards = jnp.array(
-        [
-            [1],
-            [5],
-        ]
-    )
-    q_a_star_next = jnp.array(
-        [
-            [10],
-            [40],
-        ]
-    )
-    completion_mask = jnp.array(
-        [
-            [0],
-            [0],
-        ]
-    ).astype(bool)
-    continuation_mask = jnp.array(
-        [
-            [0],
-            [1],
-        ]
-    ).astype(bool)
+    jax.random.PRNGKey(2)
+    np.random.seed(5)
+
     discount = 0.9
-    target_q = get_utils(
-        rewards,
-        q_a_star_next,
-        completion_mask,
-        discount,
-    )
-    print("target q")
-    print(target_q)
-    # print("valid q mask")
-    # print(construct_valid_q_mask(4).astype(int))
+    data = {
+        'observations': np.arange(6),
+        'next_observations': np.arange(6) + 1,
+        'actions': np.arange(6) * 2,
+        'rewards': np.arange(6) * 0.5 + 1,
+        'masks': np.array(
+            [0, 1, 1, 0, 1, 1]
+        ),
+        'terminals': np.array(
+            [1, 0, 0, 1, 0, 1]
+        ),
+    }
+    print("Initial data:")
+    for k, v in data.items():
+        print(f"{k}:")
+        print(v)
+    print()
 
-    # continuation_mask = jnp.array(
-    #     [
-    #         [1, 0, 1, 1],
-    #         [1, 1, 1, 1],
-    #         [1, 1, 1, 0],
-    #         [0, 1, 1, 1],
-    #         [0, 1, 0, 1],
-    #     ]
-    # )
+    dataset = Dataset.create(discount=discount, **data)
+    batch = dataset.sample_in_trajectories(batch_size=2, sequence_length=4)
+    # Convert to jax
+    batch = {k: jnp.array(v) for k, v in batch.items()}
+    print("Sampled batch:")
+    for k, v in batch.items():
+        print(f"{k}:")
+        print(v)
+    print()
 
-    # print("valid q mask batch")
-    # print(construct_valid_q_mask_batch(continuation_mask).astype(int))
+    q = jnp.array([
+        [1.0, 2.0, 3.0, 4.0],
+        [4.0, 8.0, 10.0, 12.0],
+    ])
+    q_a_star_next = jnp.array([
+        [2.0, 3.0, 4.0, 5.0],
+        [5.0, 9.0, 11.0, 13.0],
+    ])
 
-    q = jnp.array(
-        [
-            [11],
-            [42],
-        ]
-    )
-    q_loss = coherent_q_loss(
+    loss = coherent_q_loss(
         q,
         q_a_star_next,
-        rewards,
-        completion_mask,
-        continuation_mask,
+        batch['rewards'],
+        batch['times_to_terminals'],
+        batch['utils_to_terminals'],
+        1 - batch['masks'],
         discount,
     )
     print("coherent q loss")
-    print(q_loss)
+    print(loss)

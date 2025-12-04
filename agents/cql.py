@@ -26,9 +26,11 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].ndim == 3 # [batch, seq_len, obs_dim]
         assert batch['actions'].ndim == 3 # [batch, seq_len, act_dim]
         assert batch['rewards'].ndim == 2 # [batch, seq_len]
+        assert batch['utils_to_terminals'].ndim == 2 # [batch, seq_len]
+        assert batch['times_to_terminals'].ndim == 2 # [batch, seq_len]
         assert batch['masks'].ndim == 2 # [batch, seq_len]
         assert batch['terminals'].ndim == 2 # [batch, seq_len]
-        assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2]
+        assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2] == batch['utils_to_terminals'].shape[0:2] == batch['times_to_terminals'].shape[0:2]
 
         batch_size, seq_len = batch['observations'].shape[0:2]
         rng, sample_rng = jax.random.split(rng)
@@ -44,8 +46,9 @@ class CQLAgent(flax.struct.PyTreeNode):
             q=q,
             q_a_star_next=q_a_star_next,
             rewards=batch['rewards'],
+            times_to_terminals=batch['times_to_terminals'],
+            utils_to_terminals=batch['utils_to_terminals'],
             completion_mask=~batch['masks'].astype(bool),
-            continuation_mask=~batch['terminals'].astype(bool),
             discount=self.config['discount'],
         )
         return q_loss, {
