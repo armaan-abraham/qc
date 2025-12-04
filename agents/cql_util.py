@@ -46,8 +46,6 @@ def distant_coherence_loss(
         obs_pre=seq_len,
     )
     obs_post_util_to_go_discount = discount ** jnp.abs(pair_rel_times)
-    # print("obs post util to go discount:")
-    # print(obs_post_util_to_go_discount)
 
     # Element i j for a sequence in the batch is the observed utility between
     # observation i and j plus the expected utility to go from taking the
@@ -61,11 +59,13 @@ def distant_coherence_loss(
         obs_post=seq_len,
     )
     diffs = mixed_util_from_obs_pre - q_obs_pre
-    lower_bound_loss = jnp.where(
-        valid_pair_rel_utils,
-        jnp.maximum(0.0, diffs),
-        0.0,
-    ) ** 2 / jnp.maximum(1.0, valid_pair_rel_utils.sum())
+    lower_bound_loss = jnp.sum(
+        jnp.where(
+            valid_pair_rel_utils,
+            jnp.maximum(0.0, diffs),
+            0.0,
+        ) ** 2 
+    ) / jnp.maximum(1.0, valid_pair_rel_utils.sum())
 
 
     # === Upper bound loss ===
@@ -106,11 +106,13 @@ def distant_coherence_loss(
         obs_post=seq_len,
     )
     diffs = mixed_util_from_obs_pre - q_a_star_obs_pre
-    upper_bound_loss = jnp.where(
-        valid_pair_rel_utils,
-        jnp.maximum(0.0, diffs),
-        0.0,
-    ) ** 2 / jnp.maximum(1.0, valid_pair_rel_utils.sum())
+    upper_bound_loss = jnp.sum(
+        jnp.where(
+            valid_pair_rel_utils,
+            jnp.maximum(0.0, diffs),
+            0.0,
+        ) ** 2 
+    ) / jnp.maximum(1.0, valid_pair_rel_utils.sum())
 
     return lower_bound_loss + upper_bound_loss
 
