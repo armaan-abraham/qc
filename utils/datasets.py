@@ -81,6 +81,7 @@ class Dataset(FrozenDict):
     def init_term_locs(self):
         # Store terminal locations for sampling within episodes
         self.terminal_locs = np.nonzero(self['terminals'] > 0)[0]
+        print("Num terminals in dataset:", len(self.terminal_locs))
 
         # Store trajectory start locations
         self.start_locs = np.concatenate(([0], self.terminal_locs[:-1] + 1))
