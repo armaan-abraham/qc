@@ -33,6 +33,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2] == batch['utils_to_terminals'].shape[0:2] == batch['times_to_terminals'].shape[0:2]
 
         batch_size, seq_len = batch['observations'].shape[0:2]
+        assert seq_len == self.config['horizon_length']
+        assert batch_size == self.config['batch_size']
         rng, sample_rng = jax.random.split(rng)
         a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng)
         assert a_star_next.shape == (batch_size, seq_len, self.config['action_dim'])
