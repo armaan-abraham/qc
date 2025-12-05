@@ -111,7 +111,6 @@ def coherent_q_loss(
     assert completion_mask.dtype == bool
     assert continuation_mask.dtype == bool
     assert q.shape == rewards.shape == q_a_star_next.shape
-    # TODO: check boundaries
 
     batch_size, seq_len = rewards.shape
 
