@@ -348,10 +348,10 @@ def get_config():
             num_critics=2,
 
             # Actor
-            actor_type='gaussian', # gaussian or flow
-            actor_num_samples=32, # Number of action samples for actor flow
+            actor_type='flow', # gaussian or flow
+            actor_num_samples=16, # Number of action samples for actor flow
             flow_steps=10,  # Number of flow steps.
-            actor_hidden_dims=(512, 512, 512),
+            actor_hidden_dims=(512, 512, 512, 512),
 
             tau=0.005,  # Target network update rate.
             weight_decay=1e-3,
