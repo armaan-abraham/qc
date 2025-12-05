@@ -13,6 +13,8 @@ def get_utils(
 
     # Compute reward for every multi action q function
     batch_size, seq_len = rewards.shape
+    assert q_next.ndim == 3 and q_next.shape[1:] == (batch_size, seq_len)
+    num_critics = q_next.shape[0]
 
     rewards_by_obs = jnp.concatenate(
         [
@@ -43,12 +45,13 @@ def get_utils(
                 0.0,
                 q_next,
             ),
-            jnp.zeros((batch_size, seq_len)),
+            jnp.zeros((num_critics, batch_size, seq_len)),
         ],
         axis=-1
     )
+    assert q_a_star_next_pad.shape == (num_critics, batch_size, seq_len * 2)
     range_idxs = jnp.arange(seq_len)[:, None] + jnp.arange(seq_len)[None, :]
-    target_q_a_star = q_a_star_next_pad[:, range_idxs]
+    target_q_a_star = q_a_star_next_pad[:, :, range_idxs]
     discounts = discount ** (jnp.arange(seq_len) + 1)
     target_q_a_star = target_q_a_star * discounts
 
@@ -61,7 +64,7 @@ def get_utils(
     target_q_shift = jnp.zeros_like(target_q)
     dst_i = src_i
     dst_j = src_j + dst_i
-    target_q = target_q_shift.at[:, dst_i, dst_j].set(target_q[:, src_i, src_j])
+    target_q = target_q_shift.at[:, :, dst_i, dst_j].set(target_q[:, :, src_i, src_j])
     
     return target_q
 
@@ -110,9 +113,11 @@ def coherent_q_loss(
 ):
     assert completion_mask.dtype == bool
     assert continuation_mask.dtype == bool
-    assert q.shape == rewards.shape == q_a_star_next.shape
-
     batch_size, seq_len = rewards.shape
+    num_critics = q.shape[0]
+    assert q.shape == (num_critics, batch_size, seq_len)
+    assert q_a_star_next.shape == (batch_size, seq_len)
+    
 
     # These are the bellman-derived values for each multi action q for observed
     # actions in terms of observed rewards and q values from the next
@@ -120,16 +125,18 @@ def coherent_q_loss(
     # flow.
     rollouts_q_a_star = get_utils(
         rewards,
-        q_a_star_next,
+        q_a_star_next[None, :, :],
         completion_mask,
         discount,
     )
+    assert rollouts_q_a_star.shape == (1, batch_size, seq_len, seq_len)
 
     diag_i, diag_j = jnp.diag_indices(seq_len)
-    target_q_one_step = rollouts_q_a_star[:, diag_i, diag_j]
+    target_q_one_step = rollouts_q_a_star[:, :, diag_i, diag_j]
+    print("target q one step")
+    print(target_q_one_step)
     loss = jnp.mean((q - target_q_one_step) ** 2)
     
-
     if seq_len > 1:
         valid_q_mask_batch = construct_valid_q_mask_batch(continuation_mask)
         assert valid_q_mask_batch.dtype == bool
@@ -140,12 +147,13 @@ def coherent_q_loss(
         # actions.
         q_expand = repeat(
             q,
-            "batch seq_obs -> batch seq_obs seq_act",
+            "ensemble batch seq_obs -> ensemble batch seq_obs seq_act",
             seq_act=seq_len,
+            ensemble=num_critics,
         )
         diffs = rollouts_q_a_star - q_expand
         diffs_i, diffs_j = jnp.triu_indices(seq_len, k=1)
-        diffs = diffs[:, diffs_i, diffs_j]
+        diffs = diffs[:, :, diffs_i, diffs_j]
         valid_diffs = valid_q_mask_batch[:, diffs_i, diffs_j]
         upward_ineq_loss = jnp.sum(
             jnp.where(
@@ -153,7 +161,7 @@ def coherent_q_loss(
                 jnp.maximum(diffs, 0.0) ** 2,
                 0.0,
             )
-        ) / jnp.maximum(jnp.sum(valid_diffs), 1)
+        ) / jnp.maximum(jnp.sum(valid_diffs) * num_critics, 1)
 
         # Compare every q value to all previous q star values by chaining two
         # inequalities for any given observation: 
@@ -171,10 +179,11 @@ def coherent_q_loss(
         # after that in the actual rollout.
         rollouts_q = get_utils(
             rewards[:, 1:-1],
-            q[:, 2:],
+            q[:, :, 2:],
             completion_mask[:, 1:-1],
             discount,
         )
+        assert rollouts_q.shape == (num_critics, batch_size, seq_len - 2, seq_len - 2)
         # This is the utility for starting at the indexed observation and following
         # the optimal policy
         q_a_star_next_expand = repeat(
@@ -201,13 +210,13 @@ def coherent_q_loss(
                 jnp.maximum(diffs, 0.0) ** 2,
                 0,
             )
-        ) / jnp.maximum(jnp.sum(valid_diffs), 1)
+        ) / jnp.maximum(jnp.sum(valid_diffs) * num_critics, 1)
 
         # The above loss does not include comparisons of q_a_star and q at the same
         # observation, so we compute that separately. At any given observation, the
         # Q function for the optimal action should be larger than that for the
         # observed action.
-        same_obs_diffs = q[:, 1:] - q_a_star_next[:, :-1]
+        same_obs_diffs = q[:, :, 1:] - q_a_star_next[:, :-1]
         valid = continuation_mask[:, :-1]
         downward_ineq_loss_same = jnp.sum(
             jnp.where(
@@ -215,7 +224,7 @@ def coherent_q_loss(
                 jnp.maximum(same_obs_diffs, 0.0) ** 2,
                 0.0,
             )
-        ) / jnp.maximum(jnp.sum(valid), 1)
+        ) / jnp.maximum(jnp.sum(valid) * num_critics, 1)
         downward_ineq_loss = downward_ineq_loss_cross + downward_ineq_loss_same
 
         # Upward inequality loss pushes q values up, downward pushes them down, and
@@ -256,14 +265,6 @@ if __name__ == "__main__":
         ]
     ).astype(bool)
     discount = 0.9
-    target_q = get_utils(
-        rewards,
-        q_a_star_next,
-        completion_mask,
-        discount,
-    )
-    print("target q")
-    print(target_q)
     # print("valid q mask")
     # print(construct_valid_q_mask(4).astype(int))
 
@@ -282,8 +283,10 @@ if __name__ == "__main__":
 
     q = jnp.array(
         [
-            [11],
-            [42],
+            [
+                [11],
+                [39],
+            ]
         ]
     )
     q_loss = coherent_q_loss(
