@@ -76,7 +76,9 @@ class Dataset(FrozenDict):
         data['times_to_terminals'] = times_to_terminals
         if freeze:
             jax.tree_util.tree_map(lambda arr: arr.setflags(write=False), data)
-        return cls(data)
+        instance = cls(data)
+        instance.discount = discount
+        return instance
     
     def init_term_locs(self):
         # Store terminal locations for sampling within episodes
@@ -107,14 +109,32 @@ class Dataset(FrozenDict):
         starts = self.start_locs[sampled_episodes]
         lens = episode_lens[sampled_episodes]
 
-        # Sample random offsets within each episode: [batch_size, sequence_length]
-        offsets = (np.random.random((batch_size, sequence_length)) * lens[:, None]).astype(np.int64)
+        # Sample random starting offsets within each episode: [batch_size]
+        start_idxs = (np.random.random(batch_size) * lens).astype(np.int64)
+
+        # Sequence indexes are produced by sampling offsets from a poisson
+        # distribution
+        offsets = np.concatenate(
+            [
+                np.zeros((batch_size, 1), dtype=np.int64),
+                np.maximum(
+                    np.random.poisson(self.discount, size=(batch_size, sequence_length - 1)).astype(np.int64),
+                    1,
+                ), 
+            ],
+            axis=1
+        )
+
+        idxs = start_idxs[:, None] + np.cumsum(offsets, axis=1)
+
+        # Wrap around indices that exceed episode length
+        idxs = idxs % lens[:, None]
 
         # Compute transition indices
-        transition_idxs = starts[:, None] + offsets
+        global_idxs = starts[:, None] + idxs
 
         # Index into dataset
-        return jax.tree_util.tree_map(lambda arr: arr[transition_idxs], self._dict)
+        return jax.tree_util.tree_map(lambda arr: arr[global_idxs], self._dict)
 
 
 class ReplayBuffer(Dataset):
@@ -193,7 +213,7 @@ class ReplayBuffer(Dataset):
 
 if __name__ == "__main__":
     np.random.seed(3)
-    discount = 0.9
+    discount = 0.99
     # Simple test
     data = {
         'observations': np.arange(6),
