@@ -117,10 +117,7 @@ class Dataset(FrozenDict):
         offsets = np.concatenate(
             [
                 np.zeros((batch_size, 1), dtype=np.int64),
-                np.maximum(
-                    np.random.poisson(self.discount, size=(batch_size, sequence_length - 1)).astype(np.int64),
-                    1,
-                ), 
+                np.random.poisson(self.discount, size=(batch_size, sequence_length - 1)).astype(np.int64) + 1,
             ],
             axis=1
         )
