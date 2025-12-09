@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import ml_collections
 import optax
-from einops import repeat, einsum, rearrange
+from einops import repeat, einsum, rearrange, reduce
 from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
@@ -38,27 +38,35 @@ class CQLAgent(flax.struct.PyTreeNode):
         rng, sample_rng = jax.random.split(rng)
         a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng)
         assert a_star_next.shape == (batch_size, seq_len, self.config['action_dim'])
-        q_a_star_next = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], actions=a_star_next))
-        assert q_a_star_next.shape == (batch_size, seq_len)
+        q_a_star_next_ens = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], actions=a_star_next))
+        assert q_a_star_next_ens.shape == (self.config['num_critics'], batch_size, seq_len)
+        q_a_star_next = reduce(q_a_star_next_ens, 'ensemble batch seq -> batch seq', 'mean')
 
-        q = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
-        assert q.shape == (batch_size, seq_len)
+        q_ens = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
+        assert q_ens.shape == (self.config['num_critics'], batch_size, seq_len)
 
-        q_loss = coherent_q_loss(
-            q=q,
-            q_a_star_next=q_a_star_next,
-            rewards=batch['rewards'],
-            times_to_terminals=batch['times_to_terminals'],
-            utils_to_terminals=batch['utils_to_terminals'],
-            completion_mask=~batch['masks'].astype(bool),
-            discount=self.config['discount'],
+        q_loss_ens = jax.vmap(
+            coherent_q_loss,
+            in_axes=(0, None, None, None, None, None, None)
+        )(
+            q_ens,
+            q_a_star_next,
+            batch['rewards'],
+            batch['times_to_terminals'],
+            batch['utils_to_terminals'],
+            ~batch['masks'].astype(bool),
+            self.config['discount'],
         )
+        assert q_loss_ens.shape == (self.config['num_critics'],)
+
+        q_loss = jnp.mean(q_loss_ens)
+
         return q_loss, {
             'critic_loss': q_loss,
-            'q_mean': q.mean(),
-            'q_std': q.std(),
-            'q_max': q.max(),
-            'q_min': q.min(),
+            'q_mean': q_ens.mean(),
+            'q_std': q_ens.std(),
+            'q_max': q_ens.max(),
+            'q_min': q_ens.min(),
             'q_a_star_next_mean': q_a_star_next.mean(),
             'q_a_star_next_std': q_a_star_next.std(),
             'q_a_star_next_max': q_a_star_next.max(),
@@ -92,6 +100,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             }
 
         else: # gaussian
+            raise NotImplementedError("CQL agent only supports flow actor currently.")
             actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
             actor_actions_unclipped = actor_dists.mode()
             actor_actions = jnp.clip(actor_actions_unclipped, -1, 1)
@@ -208,13 +217,16 @@ class CQLAgent(flax.struct.PyTreeNode):
                 "batch sample obs_dim -> (batch sample) 1 obs_dim",
             )
         
-            q = self.network.select("critic")(observations_seq, actions=actions_seq)
-            q = rearrange(
-                q,
-                "(batch sample) 1 -> batch sample",
+            q_ens = self.network.select("critic")(observations_seq, actions=actions_seq)
+            assert q_ens.shape == ((self.config['num_critics'], num_observations * self.config['actor_num_samples'], 1))
+            q_ens = rearrange(
+                q_ens,
+                "ensemble (batch sample) 1 -> ensemble batch sample",
                 batch=num_observations,                
                 sample=self.config["actor_num_samples"],
             )
+            q = reduce(q_ens, 'ensemble batch sample -> batch sample', 'mean')
+            assert q.shape == (num_observations, self.config['actor_num_samples'])
 
             return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
         else:
@@ -269,7 +281,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         critic_def = Value(
             hidden_dims=config['critic_hidden_dims'],
             layer_norm=True,
-            num_ensembles=1,
+            num_ensembles=config['num_critics'],
             encoder=encoders.get('critic'),
         )
         if config['actor_type'] == 'gaussian':
@@ -338,15 +350,16 @@ def get_config():
 
             # Critic
             critic_hidden_dims=(512, 512, 512, 512),
+            num_critics=2,
 
             # Actor
             actor_type='flow', # gaussian or flow
-            actor_num_samples=4, # Number of action samples for actor flow
+            actor_num_samples=16, # Number of action samples for actor flow
             flow_steps=10,  # Number of flow steps.
             actor_hidden_dims=(512, 512, 512, 512),
 
             tau=0.005,  # Target network update rate.
-            weight_decay=1e-3,
+            weight_decay=0,
             max_grad_norm=-1.,  # Maximum gradient norm for clipping (-1 to disable).
             discount=0.99,  # Discount factor.
             lr=3e-4,  # Learning rate.
