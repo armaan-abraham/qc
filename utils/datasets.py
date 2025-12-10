@@ -112,12 +112,10 @@ class Dataset(FrozenDict):
         # Sample random starting offsets within each episode: [batch_size]
         start_idxs = (np.random.random(batch_size) * lens).astype(np.int64)
 
-        # Sequence indexes are produced by sampling offsets from a poisson
-        # distribution
         offsets = np.concatenate(
             [
                 np.zeros((batch_size, 1), dtype=np.int64),
-                np.random.poisson(discount, size=(batch_size, sequence_length - 1)).astype(np.int64) + 1,
+                np.ones((batch_size, sequence_length - 1), dtype=np.int64),
             ],
             axis=1
         )
