@@ -354,7 +354,7 @@ def get_config():
             actor_hidden_dims=(512, 512, 512, 512),
 
             tau=0.005,  # Target network update rate.
-            weight_decay=1e-3,
+            weight_decay=0,
             max_grad_norm=-1.,  # Maximum gradient norm for clipping (-1 to disable).
             discount=0.99,  # Discount factor.
             lr=3e-4,  # Learning rate.
