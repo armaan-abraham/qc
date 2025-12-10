@@ -137,7 +137,7 @@ def main(_):
         return ds
     
     train_dataset = process_train_dataset(train_dataset)
-    example_batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length)
+    example_batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount)
     
     agent_class = agents[config['agent_name']]
     agent = agent_class.create(
@@ -177,7 +177,7 @@ def main(_):
             )
             train_dataset = process_train_dataset(train_dataset)
 
-        batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length)
+        batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount)
 
         agent, offline_info = agent.update(batch)
 
@@ -287,7 +287,7 @@ def main(_):
 
         if i >= FLAGS.start_training:
             batch = replay_buffer.sample_in_trajectories(config['batch_size'] * FLAGS.utd_ratio, 
-                        sequence_length=FLAGS.horizon_length)
+                        sequence_length=FLAGS.horizon_length, discount=discount)
             batch = jax.tree.map(lambda x: x.reshape((
                 FLAGS.utd_ratio, config["batch_size"]) + x.shape[1:]), batch)
 

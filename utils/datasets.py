@@ -96,7 +96,7 @@ class Dataset(FrozenDict):
 
 
 
-    def sample_in_trajectories(self, batch_size: int, sequence_length: int):
+    def sample_in_trajectories(self, batch_size: int, sequence_length: int, discount: float):
         """Sample transitions and return a batch of shape [batch_size, sequence_length, ...], 
         where all transitions within a sequence are from the same episode.
         Episodes are chosen proportionally to their length."""
@@ -117,7 +117,7 @@ class Dataset(FrozenDict):
         offsets = np.concatenate(
             [
                 np.zeros((batch_size, 1), dtype=np.int64),
-                np.random.poisson(self.discount, size=(batch_size, sequence_length - 1)).astype(np.int64) + 1,
+                np.random.poisson(discount, size=(batch_size, sequence_length - 1)).astype(np.int64) + 1,
             ],
             axis=1
         )
