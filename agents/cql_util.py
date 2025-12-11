@@ -107,6 +107,7 @@ def coherent_q_loss(
     completion_mask: jnp.ndarray,
     continuation_mask: jnp.ndarray,
     discount: float,
+    long_horizon_weight: float = 1.0,
 ):
     assert completion_mask.dtype == bool
     assert continuation_mask.dtype == bool
@@ -150,7 +151,7 @@ def coherent_q_loss(
         upward_ineq_loss = jnp.sum(
             jnp.where(
                 valid_diffs,
-                jnp.maximum(diffs, 0.0) ** 2,
+                jnp.maximum(diffs, 0.0),
                 0.0,
             )
         ) / jnp.maximum(jnp.sum(valid_diffs), 1)
@@ -198,7 +199,7 @@ def coherent_q_loss(
         downward_ineq_loss_cross = jnp.sum(
             jnp.where(
                 valid_diffs,
-                jnp.maximum(diffs, 0.0) ** 2,
+                jnp.maximum(diffs, 0.0),
                 0,
             )
         ) / jnp.maximum(jnp.sum(valid_diffs), 1)
@@ -212,7 +213,7 @@ def coherent_q_loss(
         downward_ineq_loss_same = jnp.sum(
             jnp.where(
                 valid,
-                jnp.maximum(same_obs_diffs, 0.0) ** 2,
+                jnp.maximum(same_obs_diffs, 0.0),
                 0.0,
             )
         ) / jnp.maximum(jnp.sum(valid), 1)
@@ -220,7 +221,7 @@ def coherent_q_loss(
 
         # Upward inequality loss pushes q values up, downward pushes them down, and
         # one step is the standard bellman loss.
-        loss += upward_ineq_loss + downward_ineq_loss
+        loss += (upward_ineq_loss + downward_ineq_loss) * long_horizon_weight
 
     return loss
     

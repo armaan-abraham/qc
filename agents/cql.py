@@ -43,7 +43,7 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         q_loss_ens = jax.vmap(
             coherent_q_loss,
-            in_axes=(0, None, None, None, None, None),
+            in_axes=(0, None, None, None, None, None, None),
         )(
             q_ens,
             q_a_star_next,
@@ -51,6 +51,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             ~batch['masks'].astype(bool),
             ~batch['terminals'].astype(bool),
             self.config['discount'],
+            self.config['long_horizon_weight'],
         )
         assert q_loss_ens.shape == (self.config['num_critics'],)
 
@@ -346,6 +347,7 @@ def get_config():
             # Critic
             critic_hidden_dims=(512, 512, 512, 512),
             num_critics=2,
+            long_horizon_weight=1.0,
 
             # Actor
             actor_type='flow', # gaussian or flow
