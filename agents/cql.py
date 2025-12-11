@@ -95,7 +95,6 @@ class CQLAgent(flax.struct.PyTreeNode):
             }
 
         else: # gaussian
-            raise NotImplementedError("CQL agent only supports flow actor currently.")
             actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
             actor_actions_unclipped = actor_dists.mode()
             actor_actions = jnp.clip(actor_actions_unclipped, -1, 1)
@@ -105,7 +104,9 @@ class CQLAgent(flax.struct.PyTreeNode):
             bc_loss = -log_probs_mean
 
             # Q loss
-            q_loss = -self.network.select('critic')(batch['observations'], actions=actor_actions).mean()
+            q = self.network.select('critic')(batch['observations'], actions=actor_actions)
+            assert q.shape == (self.config['num_critics'], batch_size, seq_len)
+            q_loss = -q.mean()
 
             return bc_loss * self.config['bc_alpha'] + q_loss, {
                 'bc_loss': bc_loss,
