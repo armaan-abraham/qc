@@ -12,7 +12,8 @@ def one_step_bellman_loss(
     discount: float,
 ):
     targets = rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32))
-    return jnp.mean((q - targets) ** 2)
+    loss = jnp.mean((q - targets) ** 2)
+    return loss
 
 
 def distant_coherence_loss(
@@ -150,57 +151,69 @@ def coherent_q_loss(
 
 
 if __name__ == "__main__":
-    from utils.datasets import Dataset
+    from utils.datasets import Dataset, get_utils_and_times_to_terminals
     import numpy as np
 
-    jax.random.PRNGKey(2)
-    np.random.seed(5)
-
     discount = 0.9
-    data = {
-        'observations': np.arange(6),
-        'next_observations': np.arange(6) + 1,
-        'actions': np.arange(6) * 2,
-        'rewards': np.arange(6) * 0.5 + 1,
-        'masks': np.array(
-            [0, 1, 1, 0, 1, 1]
-        ),
-        'terminals': np.array(
-            [1, 0, 0, 1, 0, 1]
-        ),
-    }
-    print("Initial data:")
-    for k, v in data.items():
-        print(f"{k}:")
-        print(v)
-    print()
 
-    dataset = Dataset.create(discount=discount, **data)
-    batch = dataset.sample_in_trajectories(batch_size=2, sequence_length=4)
-    # Convert to jax
-    batch = {k: jnp.array(v) for k, v in batch.items()}
-    print("Sampled batch:")
-    for k, v in batch.items():
-        print(f"{k}:")
-        print(v)
-    print()
+    rewards = jnp.array(
+        [
+            [1, 2, 3, 4],
+            [5, 7, 9, 11],
+        ]
+    )
+    q_a_star_next = jnp.array(
+        [
+            [10, 11, 12, 13],
+            [40, 42, 44, 46],
+        ]
+    )
+    completion_mask = jnp.array(
+        [
+            [0, 0, 0, 0],
+            [0, 0, 0, 1],
+        ]
+    ).astype(bool)
+    continuation_mask = jnp.array(
+        [
+            [1, 1, 1, 0],
+            [1, 1, 1, 0],
+        ]
+    ).astype(bool)
+    q = jnp.array(
+        [
+            [11, 13, 15, 17],
+            [42, 44, 46, 48],
+        ]
+    )
 
-    q = jnp.array([
-        [1.0, 2.0, 3.0, 4.0],
-        [4.0, 8.0, 10.0, 12.0],
-    ])
-    q_a_star_next = jnp.array([
-        [2.0, 3.0, 4.0, 5.0],
-        [5.0, 9.0, 11.0, 13.0],
-    ])
+    
+    utils_to_terminals = []
+    times_to_terminals = []
+    for batch_idx in range(rewards.shape[0]):
+        utils_to_terminals_seq, times_to_terminals_seq = get_utils_and_times_to_terminals(
+            rewards[batch_idx],
+            ~continuation_mask[batch_idx],
+            discount,
+        )
+        utils_to_terminals.append(utils_to_terminals_seq)
+        times_to_terminals.append(times_to_terminals_seq)
+    utils_to_terminals = jnp.stack(utils_to_terminals, axis=0)
+    times_to_terminals = jnp.stack(times_to_terminals, axis=0)
+
+    print("utils to terminals")
+    print(utils_to_terminals)
+    print("times to terminals")
+    print(times_to_terminals)
+
 
     loss = coherent_q_loss(
         q,
         q_a_star_next,
-        batch['rewards'],
-        batch['times_to_terminals'],
-        batch['utils_to_terminals'],
-        1 - batch['masks'],
+        rewards,
+        times_to_terminals,
+        utils_to_terminals,
+        completion_mask,
         discount,
     )
     print("coherent q loss")

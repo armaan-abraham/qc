@@ -33,9 +33,9 @@ def get_utils_and_times_to_terminals(rewards, terminals, discount: float):
     # valid unless used to compute utils between transitions on a relative
     # basis, because these are relative to terminals, not episode
     # completions.
-    utils_to_terminals = np.zeros_like(rewards)
+    utils_to_terminals = np.zeros_like(rewards, dtype=np.float32)
     util_to_terminal = 0.0
-    times_to_terminals = np.zeros_like(rewards)
+    times_to_terminals = np.zeros_like(rewards, dtype=np.int32)
     next_terminal_idx = len(rewards) - 1
     for t_idx in range(len(rewards) - 1, -1, -1):
         if terminals[t_idx] > 0:
