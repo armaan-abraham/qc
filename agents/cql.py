@@ -54,7 +54,9 @@ class CQLAgent(flax.struct.PyTreeNode):
         )
         assert q_loss_ens.shape == (self.config['num_critics'],)
 
-        q_loss = jnp.mean(q_loss_ens)
+        # Divide by mean Q value to standardize loss (e.g. for gradient
+        # clipping)
+        q_loss = jnp.mean(q_loss_ens) / jnp.mean(jnp.abs(q_ens))
 
         return q_loss, {
             'critic_loss': q_loss,
