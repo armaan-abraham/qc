@@ -128,7 +128,8 @@ def coherent_q_loss(
 
     diag_i, diag_j = jnp.diag_indices(seq_len)
     target_q_one_step = rollouts_q_a_star[:, diag_i, diag_j]
-    loss = jnp.mean((q - target_q_one_step) ** 2)
+    one_step_loss = jnp.mean((q - target_q_one_step) ** 2)
+    loss = one_step_loss
     
 
     if seq_len > 1:
@@ -219,11 +220,16 @@ def coherent_q_loss(
         ) / jnp.maximum(jnp.sum(valid), 1)
         downward_ineq_loss = downward_ineq_loss_cross + downward_ineq_loss_same
 
+        long_horizon_loss = upward_ineq_loss + downward_ineq_loss
+
         # Upward inequality loss pushes q values up, downward pushes them down, and
         # one step is the standard bellman loss.
-        loss += (upward_ineq_loss + downward_ineq_loss) * long_horizon_weight
+        loss += long_horizon_loss * long_horizon_weight
 
-    return loss
+    return loss, {
+        "one_step_loss": one_step_loss,
+        "long_horizon_loss": long_horizon_loss if seq_len > 1 else 0.0
+    }
     
 
 if __name__ == "__main__":
