@@ -109,21 +109,9 @@ class Dataset(FrozenDict):
         starts = self.start_locs[sampled_episodes]
         lens = episode_lens[sampled_episodes]
 
-        # Sample random starting offsets within each episode: [batch_size]
-        start_idxs = (np.random.random(batch_size) * lens).astype(np.int64)
-
-        offsets = np.concatenate(
-            [
-                np.zeros((batch_size, 1), dtype=np.int64),
-                np.ones((batch_size, sequence_length - 1), dtype=np.int64),
-            ],
-            axis=1
-        )
-
-        idxs = start_idxs[:, None] + np.cumsum(offsets, axis=1)
-
-        # Wrap around indices that exceed episode length
-        idxs = idxs % lens[:, None]
+        # Sample random offsets within each episode: [batch_size, seq_len]
+        idxs = (np.random.random((batch_size, sequence_length)) * lens[:, None]).astype(np.int64)
+        assert np.all(idxs < lens[:, None])
 
         # Compute transition indices
         global_idxs = starts[:, None] + idxs
