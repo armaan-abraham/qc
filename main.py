@@ -32,6 +32,7 @@ flags.DEFINE_integer('log_interval', 5000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 100000, 'Evaluation interval.')
 flags.DEFINE_integer('save_interval', -1, 'Save interval.')
 flags.DEFINE_integer('start_training', 5000, 'when does training start')
+flags.DEFINE_string('dataset_sample_method', 'contiguous', 'Method to sample sequences of transitions from replay buffer.')
 
 flags.DEFINE_integer('utd_ratio', 1, "update to data ratio")
 
@@ -137,7 +138,7 @@ def main(_):
         return ds
     
     train_dataset = process_train_dataset(train_dataset)
-    example_batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount)
+    example_batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount, sample_method=FLAGS.dataset_sample_method)
     
     agent_class = agents[config['agent_name']]
     agent = agent_class.create(
@@ -177,7 +178,7 @@ def main(_):
             )
             train_dataset = process_train_dataset(train_dataset)
 
-        batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount)
+        batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount, sample_method=FLAGS.dataset_sample_method)
 
         agent, offline_info = agent.update(batch)
 
@@ -287,7 +288,7 @@ def main(_):
 
         if i >= FLAGS.start_training:
             batch = replay_buffer.sample_in_trajectories(config['batch_size'] * FLAGS.utd_ratio, 
-                        sequence_length=FLAGS.horizon_length, discount=discount)
+                        sequence_length=FLAGS.horizon_length, discount=discount, sample_method=FLAGS.dataset_sample_method)
             batch = jax.tree.map(lambda x: x.reshape((
                 FLAGS.utd_ratio, config["batch_size"]) + x.shape[1:]), batch)
 

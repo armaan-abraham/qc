@@ -96,7 +96,7 @@ class Dataset(FrozenDict):
 
 
 
-    def sample_in_trajectories(self, batch_size: int, sequence_length: int, discount: float):
+    def sample_in_trajectories(self, batch_size: int, sequence_length: int, discount: float, sample_method="contiguous"):
         """Sample transitions and return a batch of shape [batch_size, sequence_length, ...], 
         where all transitions within a sequence are from the same episode.
         Episodes are chosen proportionally to their length."""
@@ -109,8 +109,30 @@ class Dataset(FrozenDict):
         starts = self.start_locs[sampled_episodes]
         lens = episode_lens[sampled_episodes]
 
-        # Sample random offsets within each episode: [batch_size, seq_len]
-        idxs = (np.random.random((batch_size, sequence_length)) * lens[:, None]).astype(np.int64)
+
+        if sample_method == "global_uniform":
+            # Sample random offsets within each episode: [batch_size, seq_len]
+            idxs = (np.random.random((batch_size, sequence_length)) * lens[:, None]).astype(np.int64)
+        elif sample_method == "contiguous":
+
+            # Sample random starting offsets within each episode: [batch_size]
+            start_idxs = (np.random.random(batch_size) * lens).astype(np.int64)
+
+            offsets = np.concatenate(
+                [
+                    np.zeros((batch_size, 1), dtype=np.int64),
+                    np.ones((batch_size, sequence_length - 1), dtype=np.int64),
+                ],
+                axis=1
+            )
+
+            idxs = start_idxs[:, None] + np.cumsum(offsets, axis=1)
+
+            # Wrap around indices that exceed episode length
+            idxs = idxs % lens[:, None]
+        else:
+            raise ValueError(f"Unknown sample method: {sample_method}")
+
         assert np.all(idxs < lens[:, None])
 
         # Compute transition indices

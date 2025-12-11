@@ -27,6 +27,12 @@ def distant_coherence_loss(
 ):
 
     batch_size, seq_len = q.shape
+    assert jnp.issubdtype(q.dtype, jnp.floating)
+    assert jnp.issubdtype(q_a_star_next.dtype, jnp.floating)
+    assert jnp.issubdtype(rewards.dtype, jnp.floating)
+    assert jnp.issubdtype(times_to_terminals.dtype, jnp.integer)
+    assert completion_mask.dtype == jnp.bool_
+    assert discount >= 0.0 and discount <= 1.0
 
     pair_rel_utils, pair_rel_times, valid_pair_rel_utils = get_pair_rel_utils(
         utils_to_terminals,
