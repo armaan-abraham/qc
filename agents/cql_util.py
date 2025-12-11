@@ -201,7 +201,8 @@ def coherent_q_loss(
                 jnp.maximum(diffs, 0.0) ** 2,
                 0,
             )
-        ) / jnp.maximum(jnp.sum(valid_diffs), 1)
+        )
+        downward_ineq_loss_cross_denom = jnp.sum(valid_diffs)
 
         # The above loss does not include comparisons of q_a_star and q at the same
         # observation, so we compute that separately. At any given observation, the
@@ -215,8 +216,12 @@ def coherent_q_loss(
                 jnp.maximum(same_obs_diffs, 0.0) ** 2,
                 0.0,
             )
-        ) / jnp.maximum(jnp.sum(valid), 1)
-        downward_ineq_loss = downward_ineq_loss_cross + downward_ineq_loss_same
+        )
+        downward_ineq_loss_same_denom = jnp.sum(valid)
+        downward_ineq_loss = (downward_ineq_loss_cross + downward_ineq_loss_same) / jnp.maximum(
+            downward_ineq_loss_cross_denom + downward_ineq_loss_same_denom,
+            1,
+        )
 
         # Upward inequality loss pushes q values up, downward pushes them down, and
         # one step is the standard bellman loss.
@@ -226,66 +231,40 @@ def coherent_q_loss(
     
 
 if __name__ == "__main__":
-    # Simple test
-    # seq_len = 4
-    # attn_mask_seq = construct_attn_mask_seq(seq_len)
-    # print(attn_mask_seq)
+
+    discount = 0.9
 
     rewards = jnp.array(
         [
-            [1],
-            [5],
+            [1, 2, 3, 4],
+            [5, 7, 9, 11],
         ]
     )
     q_a_star_next = jnp.array(
         [
-            [10],
-            [40],
+            [10, 11, 12, 13],
+            [40, 42, 44, 46],
         ]
     )
     completion_mask = jnp.array(
         [
-            [0],
-            [0],
+            [0, 0, 0, 0],
+            [0, 0, 0, 1],
         ]
     ).astype(bool)
     continuation_mask = jnp.array(
         [
-            [0],
-            [1],
+            [1, 1, 1, 1],
+            [1, 1, 1, 0],
         ]
     ).astype(bool)
-    discount = 0.9
-    target_q = get_utils(
-        rewards,
-        q_a_star_next,
-        completion_mask,
-        discount,
-    )
-    print("target q")
-    print(target_q)
-    # print("valid q mask")
-    # print(construct_valid_q_mask(4).astype(int))
-
-    # continuation_mask = jnp.array(
-    #     [
-    #         [1, 0, 1, 1],
-    #         [1, 1, 1, 1],
-    #         [1, 1, 1, 0],
-    #         [0, 1, 1, 1],
-    #         [0, 1, 0, 1],
-    #     ]
-    # )
-
-    # print("valid q mask batch")
-    # print(construct_valid_q_mask_batch(continuation_mask).astype(int))
-
     q = jnp.array(
         [
-            [11],
-            [42],
+            [11, 13, 15, 17],
+            [42, 44, 46, 48],
         ]
     )
+
     q_loss = coherent_q_loss(
         q,
         q_a_star_next,
