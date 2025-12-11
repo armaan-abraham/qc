@@ -56,10 +56,12 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         # Divide by mean Q value to standardize loss (e.g. for gradient
         # clipping)
-        q_loss = jnp.mean(q_loss_ens) / jnp.mean(jnp.abs(q_ens))
+        q_loss = jnp.mean(q_loss_ens)
+        q_loss_standard = q_loss / jnp.mean(jnp.abs(q_ens))
 
-        return q_loss, {
+        return q_loss_standard, {
             'critic_loss': q_loss,
+            'critic_loss_standard': q_loss_standard,
             'q_mean': q_ens.mean(),
             'q_std': q_ens.std(),
             'q_max': q_ens.max(),
