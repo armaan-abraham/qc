@@ -114,7 +114,6 @@ class Dataset(FrozenDict):
             # Sample random offsets within each episode: [batch_size, seq_len]
             idxs = (np.random.random((batch_size, sequence_length)) * lens[:, None]).astype(np.int64)
         elif sample_method == "contiguous":
-
             # Sample random starting offsets within each episode: [batch_size]
             start_idxs = (np.random.random(batch_size) * lens).astype(np.int64)
 
@@ -130,6 +129,15 @@ class Dataset(FrozenDict):
 
             # Wrap around indices that exceed episode length
             idxs = idxs % lens[:, None]
+        elif sample_method == "geometric":
+            assert sequence_length == 2
+
+            start_idxs = (np.random.random(batch_size) * lens).astype(np.int64)
+            geom_samples = np.random.geometric(p=1 - discount, size=batch_size).astype(np.int64)
+            end_idxs = start_idxs + geom_samples
+            end_idxs = np.minimum(end_idxs, lens - 1)
+            idxs = np.stack([start_idxs, end_idxs], axis=1)
+
         else:
             raise ValueError(f"Unknown sample method: {sample_method}")
 
