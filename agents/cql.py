@@ -47,7 +47,7 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         q_loss_ens = jax.vmap(
             coherent_q_loss,
-            in_axes=(0, None, None, None, None, None, None)
+            in_axes=(0, None, None, None, None, None, None, None)
         )(
             q_ens,
             q_a_star_next,
