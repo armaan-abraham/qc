@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from einops import repeat, rearrange, einsum
+from einops import repeat, rearrange, einsum, reduce
 
 from utils.datasets import get_pair_rel_utils
 
@@ -39,6 +39,7 @@ def distant_coherence_loss(
         times_to_terminals,
         discount,
     )  # [batch, seq_len, seq_len]
+    valid_pair_rel_utils_float = valid_pair_rel_utils.astype(jnp.float32)
 
     # === Lower bound loss ===
 
@@ -60,21 +61,23 @@ def distant_coherence_loss(
     # optimal policy starting at observation j in terms of Q(s_j, a*), which is
     # a lower bound on the expected utility to go for taking action a_i and then
     # following the optimal policy, estimated by Q(s_i, a_i).
-    mixed_util_from_obs_pre = pair_rel_utils + obs_post_util_to_go_discount * obs_post_util_to_go
-    q_obs_pre = repeat(
-        q,
-        "batch obs_pre -> batch obs_pre obs_post",
-        obs_post=seq_len,
+    lower_bounds = pair_rel_utils + obs_post_util_to_go_discount * obs_post_util_to_go
+    lower_bounds_mean_denom = reduce(
+        valid_pair_rel_utils_float,
+        "batch obs_pre obs_post -> batch obs_pre",
+        "sum",
     )
-    diffs = mixed_util_from_obs_pre - q_obs_pre
-    lower_bound_loss = jnp.sum(
-        jnp.where(
-            valid_pair_rel_utils,
-            jnp.maximum(0.0, diffs),
-            0.0,
-        ) ** 2 
-    ) / jnp.maximum(1.0, valid_pair_rel_utils.sum())
 
+    lower_bounds_mean = reduce(
+        lower_bounds * valid_pair_rel_utils_float,
+        "batch obs_pre obs_post -> batch obs_pre",
+        "sum",
+    ) / jnp.maximum(1.0, lower_bounds_mean_denom)
+    upper_bounds_min = jnp.where(
+        lower_bounds_mean_denom > 0.0,
+        lower_bounds_mean,
+        -jnp.inf,
+    )
 
     # === Upper bound loss ===
 
@@ -90,20 +93,8 @@ def distant_coherence_loss(
         obs_post=seq_len,
     )) / discount
 
-    obs_post_q = repeat(
-        q,
-        "batch obs_post -> batch obs_pre obs_post",
-        obs_pre=seq_len,
-    )
-
     obs_post_q_discount = discount ** (jnp.abs(pair_rel_times) - 1)
-
-    # Element i j for a sequence in the batch is the observed utility between
-    # observations i+1 and j plus the expected utility to go from taking action
-    # a_j and then following the optimal policy afterward in terms of Q*(s_j,
-    # a_j). Q*(s_{i+1}, a*) is an upper bound on this value.
-    mixed_util_from_obs_pre = rel_util + obs_post_q * obs_post_q_discount
-
+    
     # We don't need to worry about the completion mask here because we will zero
     # out any difference elements where the time of i is not less than the time
     # of j, which means any rows in this repeated result corresponding to
@@ -113,8 +104,65 @@ def distant_coherence_loss(
         "batch obs_pre -> batch obs_pre obs_post",
         obs_post=seq_len,
     )
-    diffs = mixed_util_from_obs_pre - q_a_star_obs_pre
+
+    upper_bounds = (q_a_star_obs_pre - rel_util) / obs_post_q_discount
+    upper_bounds_mean_denom = reduce(
+        valid_pair_rel_utils_float,
+        "batch obs_pre obs_post -> batch obs_post",
+        "sum",
+    )
+    upper_bounds_mean = reduce(
+        upper_bounds * valid_pair_rel_utils_float,
+        "batch obs_pre obs_post -> batch obs_post",
+        "sum",
+    ) / jnp.maximum(1.0, upper_bounds_mean_denom)
+    lower_bounds_max = jnp.where(
+        upper_bounds_mean_denom > 0.0,
+        upper_bounds_mean,
+        jnp.inf,
+    )
+
+    # Compute losses
+
+    # Clip bounds based on means
+
+    upper_bounds = jnp.maximum(upper_bounds, repeat(
+        upper_bounds_min,
+        "batch obs_post -> batch obs_pre obs_post",
+        obs_pre=seq_len,
+    ))
+
+    lower_bounds = jnp.minimum(lower_bounds, repeat(
+        lower_bounds_max,
+        "batch obs_pre -> batch obs_pre obs_post",
+        obs_post=seq_len,
+    ))
+
+    q_obs_post = repeat(
+        q,
+        "batch obs_post -> batch obs_pre obs_post",
+        obs_pre=seq_len,
+    )
+
+    diffs = q_obs_post - upper_bounds
+
     upper_bound_loss = jnp.sum(
+        jnp.where(
+            valid_pair_rel_utils,
+            jnp.maximum(0.0, diffs),
+            0.0,
+        ) ** 2 
+    ) / jnp.maximum(1.0, valid_pair_rel_utils.sum())
+
+    q_obs_pre = repeat(
+        q,
+        "batch obs_pre -> batch obs_pre obs_post",
+        obs_post=seq_len,
+    )
+
+    diffs = lower_bounds - q_obs_pre
+
+    lower_bound_loss = jnp.sum(
         jnp.where(
             valid_pair_rel_utils,
             jnp.maximum(0.0, diffs),
@@ -166,13 +214,13 @@ if __name__ == "__main__":
         [
             [1, 2, 3, 4],
             [5, 7, 9, 11],
-        ]
+        ], dtype=jnp.float32
     )
     q_a_star_next = jnp.array(
         [
             [10, 11, 12, 13],
             [40, 42, 44, 46],
-        ]
+        ], dtype=jnp.float32
     )
     completion_mask = jnp.array(
         [
@@ -190,7 +238,7 @@ if __name__ == "__main__":
         [
             [11, 13, 15, 17],
             [42, 44, 46, 48],
-        ]
+        ], dtype=jnp.float32
     )
 
     
