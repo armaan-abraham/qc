@@ -56,6 +56,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             batch['utils_to_terminals'],
             ~batch['masks'].astype(bool),
             self.config['discount'],
+            distant_coherence_weight=self.config['distant_coherence_weight'],
         )
         assert q_loss_ens.shape == (self.config['num_critics'],)
 
@@ -350,6 +351,7 @@ def get_config():
             # Critic
             critic_hidden_dims=(512, 512, 512, 512),
             num_critics=2,
+            distant_coherence_weight=1.0,
 
             # Actor
             actor_type='flow', # gaussian or flow

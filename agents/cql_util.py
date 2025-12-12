@@ -132,6 +132,7 @@ def coherent_q_loss(
     utils_to_terminals: jnp.ndarray,
     completion_mask: jnp.ndarray,
     discount: float,
+    distant_coherence_weight: float = 1.0,
 ):
     assert q.ndim == 2
     assert q.shape == q_a_star_next.shape == rewards.shape == times_to_terminals.shape == utils_to_terminals.shape == completion_mask.shape
@@ -151,7 +152,7 @@ def coherent_q_loss(
             utils_to_terminals,
             completion_mask,
             discount,
-        )
+        ) * distant_coherence_weight
     )
 
 
