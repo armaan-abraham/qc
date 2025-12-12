@@ -56,7 +56,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             batch['utils_to_terminals'],
             ~batch['masks'].astype(bool),
             self.config['discount'],
-            distant_coherence_weight=self.config['distant_coherence_weight'],
+            self.config['distant_coherence_weight'],
         )
         assert q_loss_ens.shape == (self.config['num_critics'],)
 

@@ -32,7 +32,6 @@ def distant_coherence_loss(
     assert jnp.issubdtype(rewards.dtype, jnp.floating)
     assert jnp.issubdtype(times_to_terminals.dtype, jnp.integer)
     assert completion_mask.dtype == jnp.bool_
-    assert discount >= 0.0 and discount <= 1.0
 
     pair_rel_utils, pair_rel_times, valid_pair_rel_utils = get_pair_rel_utils(
         utils_to_terminals,
@@ -132,7 +131,7 @@ def coherent_q_loss(
     utils_to_terminals: jnp.ndarray,
     completion_mask: jnp.ndarray,
     discount: float,
-    distant_coherence_weight: float = 1.0,
+    distant_coherence_weight: float,
 ):
     assert q.ndim == 2
     assert q.shape == q_a_star_next.shape == rewards.shape == times_to_terminals.shape == utils_to_terminals.shape == completion_mask.shape
@@ -167,13 +166,13 @@ if __name__ == "__main__":
         [
             [1, 2, 3, 4],
             [5, 7, 9, 11],
-        ]
+        ], dtype=jnp.float32
     )
     q_a_star_next = jnp.array(
         [
             [10, 11, 12, 13],
             [40, 42, 44, 46],
-        ]
+        ], dtype=jnp.float32
     )
     completion_mask = jnp.array(
         [
@@ -191,7 +190,7 @@ if __name__ == "__main__":
         [
             [11, 13, 15, 17],
             [42, 44, 46, 48],
-        ]
+        ], dtype=jnp.float32
     )
 
     
@@ -222,6 +221,7 @@ if __name__ == "__main__":
         utils_to_terminals,
         completion_mask,
         discount,
+        distant_coherence_weight=1.0,
     )
     print("coherent q loss")
     print(loss)
