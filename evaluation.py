@@ -60,7 +60,11 @@ def evaluate(
     Returns:
         A tuple containing the statistics, trajectories, and rendered videos.
     """
-    actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(np.random.randint(0, 2**32)))
+    # Use greedy=True for evaluation to avoid epsilon-greedy exploration
+    actor_fn = supply_rng(
+        partial(agent.sample_actions, greedy=True),
+        rng=jax.random.PRNGKey(np.random.randint(0, 2**32))
+    )
     trajs = []
     stats = defaultdict(list)
 

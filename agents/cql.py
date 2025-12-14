@@ -1,4 +1,5 @@
 import copy
+from functools import partial
 from typing import Any, Sequence
 
 import flax
@@ -36,7 +37,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert seq_len == self.config['horizon_length']
         assert batch_size == self.config['batch_size']
         rng, sample_rng = jax.random.split(rng)
-        a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng)
+        a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng, greedy=True)
         assert a_star_next.shape == (batch_size, seq_len, self.config['action_dim'])
         q_a_star_next_ens = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], actions=a_star_next))
         assert q_a_star_next_ens.shape == (self.config['num_critics'], batch_size, seq_len)
@@ -177,11 +178,12 @@ class CQLAgent(flax.struct.PyTreeNode):
         agent, infos = jax.lax.scan(self._update, self, batch)
         return agent, jax.tree_util.tree_map(lambda x: x.mean(), infos)
 
-    @jax.jit
+    @partial(jax.jit, static_argnames=('greedy',))
     def sample_actions(
         self,
         observations,
         rng=None,
+        greedy=False,
     ):
         assert observations.shape[-1] == self.config['obs_dim']
 
@@ -216,13 +218,13 @@ class CQLAgent(flax.struct.PyTreeNode):
                 observations,
                 "batch sample obs_dim -> (batch sample) 1 obs_dim",
             )
-        
+
             q_ens = self.network.select("critic")(observations_seq, actions=actions_seq)
             assert q_ens.shape == ((self.config['num_critics'], num_observations * self.config['actor_num_samples'], 1))
             q_ens = rearrange(
                 q_ens,
                 "ensemble (batch sample) 1 -> ensemble batch sample",
-                batch=num_observations,                
+                batch=num_observations,
                 sample=self.config["actor_num_samples"],
             )
             q = reduce(q_ens, 'ensemble batch sample -> batch sample', 'mean')
@@ -231,7 +233,29 @@ class CQLAgent(flax.struct.PyTreeNode):
             return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
         else:
             dist = self.network.select('actor')(observations)
-            actions = dist.sample(seed=rng)
+
+            if greedy:
+                # For evaluation: sample from policy without epsilon-greedy exploration
+                actions = dist.sample(seed=rng)
+            else:
+                # For training: epsilon-greedy action selection
+                rng, eps_rng, sample_rng, random_rng = jax.random.split(rng, 4)
+
+                # Sample from the policy
+                policy_actions = dist.sample(seed=sample_rng)
+
+                # Generate random actions uniformly in [-1, 1]
+                random_actions = jax.random.uniform(
+                    random_rng,
+                    shape=policy_actions.shape,
+                    minval=-1.0,
+                    maxval=1.0,
+                )
+
+                # Epsilon-greedy: with probability epsilon, use random action
+                use_random = jax.random.uniform(eps_rng, shape=policy_actions.shape[:-1]) < self.config['epsilon']
+                actions = jnp.where(use_random, random_actions, policy_actions)
+
             actions = jnp.clip(actions, -1, 1)
             return actions
     
@@ -367,6 +391,8 @@ def get_config():
             batch_size=128,
 
             bc_alpha=0.0, # Behavioral cloning loss weight.
+
+            epsilon=0.0, # Epsilon for epsilon-greedy action selection (Gaussian actor only).
 
         )
     )
