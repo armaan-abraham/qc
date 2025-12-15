@@ -29,6 +29,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['rewards'].ndim == 2 # [batch, seq_len]
         assert batch['utils_to_terminals'].ndim == 2 # [batch, seq_len]
         assert batch['times_to_terminals'].ndim == 2 # [batch, seq_len]
+        assert batch['terminals_are_completions'].ndim == 2 # [batch, seq_len]
         assert batch['masks'].ndim == 2 # [batch, seq_len]
         assert batch['terminals'].ndim == 2 # [batch, seq_len]
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2] == batch['utils_to_terminals'].shape[0:2] == batch['times_to_terminals'].shape[0:2]
@@ -48,13 +49,14 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         q_loss_ens = jax.vmap(
             coherent_q_loss,
-            in_axes=(0, None, None, None, None, None, None, None)
+            in_axes=(0, None, None, None, None, None, None, None, None)
         )(
             q_ens,
             q_a_star_next,
             batch['rewards'],
             batch['times_to_terminals'],
             batch['utils_to_terminals'],
+            batch['terminals_are_completions'],
             ~batch['masks'].astype(bool),
             self.config['discount'],
             self.config['distant_coherence_weight'],

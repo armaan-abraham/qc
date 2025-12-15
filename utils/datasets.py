@@ -28,7 +28,7 @@ def get_pair_rel_utils(utils_to_terminals, times_to_terminals, discount: float):
     valid_mask = rel_times > 0
     return util_diffs, rel_times, valid_mask
 
-def get_utils_and_times_to_terminals(rewards, terminals, discount: float):
+def get_utils_and_times_to_terminals(rewards, terminals, masks, discount: float):
     # Compute discounted sum of rewards to the next terminal. These are NOT
     # valid unless used to compute utils between transitions on a relative
     # basis, because these are relative to terminals, not episode
@@ -37,13 +37,17 @@ def get_utils_and_times_to_terminals(rewards, terminals, discount: float):
     util_to_terminal = 0.0
     times_to_terminals = np.zeros_like(rewards, dtype=np.int32)
     next_terminal_idx = len(rewards) - 1
+    terminals_are_completions = np.zeros_like(rewards, dtype=np.int32)
+    terminal_is_completion = masks[-1] == 0
     for t_idx in range(len(rewards) - 1, -1, -1):
         if terminals[t_idx] > 0:
             next_terminal_idx = t_idx
+            terminal_is_completion = masks[t_idx] == 0
         util_to_terminal = rewards[t_idx] + discount * util_to_terminal * (1 - terminals[t_idx])
         utils_to_terminals[t_idx] = util_to_terminal
         times_to_terminals[t_idx] = next_terminal_idx - t_idx
-    return utils_to_terminals, times_to_terminals
+        terminals_are_completions[t_idx] = terminal_is_completion
+    return utils_to_terminals, times_to_terminals, terminals_are_completions
 
 
 class Dataset(FrozenDict):
@@ -70,10 +74,11 @@ class Dataset(FrozenDict):
         # Set the final transition to a terminal
         data['terminals'][-1] = 1.0
 
-        utils_to_terminals, times_to_terminals = get_utils_and_times_to_terminals(data['rewards'], data['terminals'], discount)
+        utils_to_terminals, times_to_terminals, terminals_are_completions = get_utils_and_times_to_terminals(data['rewards'], data['terminals'], data['masks'], discount)
 
         data['utils_to_terminals'] = utils_to_terminals
         data['times_to_terminals'] = times_to_terminals
+        data['terminals_are_completions'] = terminals_are_completions
         if freeze:
             jax.tree_util.tree_map(lambda arr: arr.setflags(write=False), data)
         instance = cls(data)
@@ -199,9 +204,10 @@ class ReplayBuffer(Dataset):
         # trajectory, despite the possibility of dividing the trajectory when
         # looping around the buffer. This is fine because these values are only
         # used on a relative basis.
-        utils_to_terminals, times_to_terminals = get_utils_and_times_to_terminals(trajectory['rewards'], trajectory['terminals'], discount)
+        utils_to_terminals, times_to_terminals, terminals_are_completions = get_utils_and_times_to_terminals(trajectory['rewards'], trajectory['terminals'], trajectory['masks'], discount)
         trajectory['utils_to_terminals'] = utils_to_terminals
         trajectory['times_to_terminals'] = times_to_terminals
+        trajectory['terminals_are_completions'] = terminals_are_completions
 
         for t_idx in range(num_transitions):
             transition = jax.tree_util.tree_map(lambda arr: arr[t_idx], trajectory)
