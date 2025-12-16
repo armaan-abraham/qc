@@ -2,6 +2,7 @@ import glob, tqdm, wandb, os, json, random, time, jax
 from absl import app, flags
 from ml_collections import config_flags
 from log_utils import setup_wandb, get_exp_name, get_flag_dict, CsvLogger
+from utils.log_utils import get_wandb_video
 
 from envs.env_utils import make_env_and_datasets
 from envs.ogbench_utils import make_ogbench_env_and_datasets
@@ -39,7 +40,7 @@ flags.DEFINE_integer('utd_ratio', 1, "update to data ratio")
 flags.DEFINE_float('discount', 0.99, 'discount factor')
 
 flags.DEFINE_integer('eval_episodes', 50, 'Number of evaluation episodes.')
-flags.DEFINE_integer('video_episodes', 0, 'Number of video episodes for each task.')
+flags.DEFINE_integer('video_episodes', 1, 'Number of video episodes for each task.')
 flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
 
 config_flags.DEFINE_config_file('agent', 'agents/acfql.py', lock_config=False)
@@ -64,6 +65,10 @@ class LoggingHelper:
         assert prefix in self.csv_loggers, prefix
         self.csv_loggers[prefix].log(data, step=step)
         self.wandb_logger.log({f'{prefix}/{k}': v for k, v in data.items()}, step=step)
+
+def is_ogbench_env(env_name):
+    """Check if the environment is an OGBench environment."""
+    return 'singletask' in env_name or FLAGS.ogbench_dataset_dir is not None
 
 def main(_):
     exp_name = get_exp_name(FLAGS.seed)
@@ -193,7 +198,7 @@ def main(_):
         if i == FLAGS.offline_steps - 1 or \
             (FLAGS.eval_interval != 0 and i % FLAGS.eval_interval == 0):
             # during eval, the action chunk is executed fully
-            eval_info, _, _ = evaluate(
+            eval_info, _, renders = evaluate(
                 agent=agent,
                 env=eval_env,
                 action_dim=example_batch["actions"].shape[-1],
@@ -201,6 +206,9 @@ def main(_):
                 num_video_episodes=FLAGS.video_episodes,
                 video_frame_skip=FLAGS.video_frame_skip,
             )
+            if is_ogbench_env(FLAGS.env_name) and FLAGS.video_episodes > 0 and len(renders) > 0:
+                video = get_wandb_video(renders=renders, n_cols=len(renders))
+                eval_info['video'] = video
             logger.log(eval_info, "eval", step=log_step)
 
     # transition from offline to online
@@ -301,7 +309,7 @@ def main(_):
 
         if i == FLAGS.online_steps - 1 or \
             (FLAGS.eval_interval != 0 and i % FLAGS.eval_interval == 0):
-            eval_info, _, _ = evaluate(
+            eval_info, _, renders = evaluate(
                 agent=agent,
                 env=eval_env,
                 action_dim=action_dim,
@@ -309,6 +317,9 @@ def main(_):
                 num_video_episodes=FLAGS.video_episodes,
                 video_frame_skip=FLAGS.video_frame_skip,
             )
+            if is_ogbench_env(FLAGS.env_name) and FLAGS.video_episodes > 0 and len(renders) > 0:
+                video = get_wandb_video(renders=renders, n_cols=len(renders))
+                eval_info['video'] = video
             logger.log(eval_info, "eval", step=log_step)
 
         # saving
