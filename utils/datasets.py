@@ -54,7 +54,7 @@ class Dataset(FrozenDict):
     """Dataset class."""
 
     @classmethod
-    def create(cls, discount, freeze=True, **fields):
+    def create(cls, discount, freeze=True, size=None, **fields):
         """Create a dataset from the fields.
 
         Args:
@@ -81,7 +81,7 @@ class Dataset(FrozenDict):
         data['terminals_are_completions'] = terminals_are_completions
         if freeze:
             jax.tree_util.tree_map(lambda arr: arr.setflags(write=False), data)
-        instance = cls(data)
+        instance = cls(data, size=size)
         instance.discount = discount
         return instance
     
@@ -100,7 +100,9 @@ class Dataset(FrozenDict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.size = get_size(self._dict)
+        self.size = kwargs.get('size')
+        if self.size is None:
+            self.size = get_size(self._dict)
         self.init_term_locs()
 
     def sample_in_trajectories(self, batch_size: int, sequence_length: int, discount: float, sample_method="contiguous"):
@@ -178,8 +180,7 @@ class ReplayBuffer(Dataset):
             return buffer
 
         buffer_dict = jax.tree_util.tree_map(create_buffer, init_dataset)
-        buffer = cls(buffer_dict)
-        buffer.size = get_size(init_dataset)
+        buffer = cls(buffer_dict, size=get_size(init_dataset))
         print("Initial buffer size:", buffer.size)
         buffer.pointer = buffer.size % size
         return buffer
