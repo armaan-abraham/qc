@@ -190,6 +190,8 @@ class ReplayBuffer(Dataset):
         self.pointer = 0
 
     def add_trajectory(self, trajectory: Sequence[dict], discount: float):
+        print("Adding trajectory of length", len(trajectory))
+
         """Add a trajectory of transitions to the replay buffer."""
         num_transitions = len(trajectory)
 
@@ -198,6 +200,8 @@ class ReplayBuffer(Dataset):
         assert isinstance(trajectory, dict)
 
         terminal_locs = np.nonzero(trajectory['terminals'] > 0)[0]
+        print("Num terminals in trajectory:", len(terminal_locs))
+        print("Num completions in trajectory:", np.sum(trajectory['masks'] == 0))
         assert terminal_locs.size == 1 and terminal_locs[0] == num_transitions - 1
         assert np.all(trajectory['terminals'][trajectory['masks'] == 0] == 1)
 

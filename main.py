@@ -114,6 +114,7 @@ def main(_):
             - convert to action chunked dataset
         """
 
+        print("First create")
         ds = Dataset.create(discount=discount, **ds)
         if FLAGS.dataset_proportion < 1.0:
             new_size = int(len(ds['masks']) * FLAGS.dataset_proportion)
@@ -133,9 +134,12 @@ def main(_):
             sparse_rewards = (ds["rewards"] != 0.0) * -1.0
             ds_dict = {k: v for k, v in ds.items()}
             ds_dict["rewards"] = sparse_rewards
+            print("Creating sparse reward dataset")
             ds = Dataset.create(discount=discount, **ds_dict)
 
         return ds
+
+    print("Processing train dataset...")
     
     train_dataset = process_train_dataset(train_dataset)
     example_batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount, sample_method=FLAGS.dataset_sample_method)
