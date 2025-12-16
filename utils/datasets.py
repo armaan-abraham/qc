@@ -86,6 +86,7 @@ class Dataset(FrozenDict):
         return instance
     
     def init_term_locs(self):
+        print("Self size", self.size)
         # Store terminal locations for sampling within episodes
         self.terminal_locs = np.nonzero(self['terminals'] > 0)[0]
         # Only keep terminals that are within the dataset size
@@ -179,6 +180,7 @@ class ReplayBuffer(Dataset):
         buffer_dict = jax.tree_util.tree_map(create_buffer, init_dataset)
         buffer = cls(buffer_dict)
         buffer.size = get_size(init_dataset)
+        print("Initial buffer size:", buffer.size)
         buffer.pointer = buffer.size % size
         return buffer
 
