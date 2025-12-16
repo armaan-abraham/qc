@@ -97,12 +97,10 @@ class Dataset(FrozenDict):
         # Store trajectory start locations
         self.start_locs = np.concatenate(([0], self.terminal_locs[:-1] + 1))
     
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, size=None, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.size = kwargs.get('size')
-        if self.size is None:
-            self.size = get_size(self._dict)
+        self.size = size if size is not None else get_size(self._dict)
         self.init_term_locs()
 
     def sample_in_trajectories(self, batch_size: int, sequence_length: int, discount: float, sample_method="contiguous"):
