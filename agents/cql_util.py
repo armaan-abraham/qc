@@ -88,7 +88,6 @@ def distant_coherence_loss(
         ) ** 2
     )
     diffs_denom += jnp.sum(terminals_are_completions)
-    lower_bound_loss = diffs_sum / jnp.maximum(1.0, diffs_denom)
 
     # === Upper bound loss ===
 
@@ -128,15 +127,16 @@ def distant_coherence_loss(
         obs_post=seq_len,
     )
     diffs = mixed_util_from_obs_pre - q_a_star_obs_pre
-    upper_bound_loss = jnp.sum(
+    diffs_sum += jnp.sum(
         jnp.where(
             valid_pair_rel_utils,
             jnp.maximum(0.0, diffs),
             0.0,
         ) ** 2 
-    ) / jnp.maximum(1.0, valid_pair_rel_utils.sum())
+    )
+    diffs_denom += valid_pair_rel_utils.sum()
 
-    return lower_bound_loss + upper_bound_loss
+    return diffs_sum / jnp.maximum(diffs_denom, 1.0)
 
 def coherent_q_loss(
     q: jnp.ndarray,
