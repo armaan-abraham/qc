@@ -76,7 +76,7 @@ def distant_coherence_loss(
             0.0,
         ) ** 2 
     )
-    diffs_denom = valid_pair_rel_utils.sum()
+    diffs_denom = valid_pair_rel_utils.size / 2
 
     # Add lower bound loss based on utils to terminals if terminals are
     # completions
@@ -88,7 +88,7 @@ def distant_coherence_loss(
             0.0,
         ) ** 2
     )
-    diffs_denom += jnp.sum(terminals_are_completions)
+    diffs_denom += q.size
 
     # === Upper bound loss ===
 
@@ -135,7 +135,7 @@ def distant_coherence_loss(
             0.0,
         ) ** 2 
     )
-    diffs_denom += valid_pair_rel_utils.sum()
+    diffs_denom += valid_pair_rel_utils.size / 2
 
     return diffs_sum, diffs_denom
 
