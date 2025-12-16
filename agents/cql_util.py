@@ -12,8 +12,9 @@ def one_step_bellman_loss(
     discount: float,
 ):
     targets = rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32))
-    loss = jnp.mean((q - targets) ** 2)
-    return loss
+    loss = jnp.sum((q - targets) ** 2)
+    denom = q.size
+    return loss, denom
 
 
 def distant_coherence_loss(
@@ -136,7 +137,7 @@ def distant_coherence_loss(
     )
     diffs_denom += valid_pair_rel_utils.sum()
 
-    return diffs_sum / jnp.maximum(diffs_denom, 1.0)
+    return diffs_sum, diffs_denom
 
 def coherent_q_loss(
     q: jnp.ndarray,
@@ -151,27 +152,26 @@ def coherent_q_loss(
 ):
     assert q.ndim == 2
     assert q.shape == q_a_star_next.shape == rewards.shape == times_to_terminals.shape == utils_to_terminals.shape == completion_mask.shape
-    return (
-        one_step_bellman_loss(
-            q,
-            q_a_star_next,
-            rewards,
-            completion_mask,
-            discount,
-        )
-        + distant_coherence_loss(
-            q,
-            q_a_star_next,
-            rewards,
-            times_to_terminals,
-            utils_to_terminals,
-            terminals_are_completions,
-            completion_mask,
-            discount,
-        ) * distant_coherence_weight
+    one_step_loss, one_step_denom = one_step_bellman_loss(
+        q,
+        q_a_star_next,
+        rewards,
+        completion_mask,
+        discount,
     )
-
-
+    distant_loss, distant_denom = distant_coherence_loss(
+        q,
+        q_a_star_next,
+        rewards,
+        times_to_terminals,
+        utils_to_terminals,
+        terminals_are_completions,
+        completion_mask,
+        discount,
+    )
+    total_loss = one_step_loss + distant_coherence_weight * distant_loss
+    total_denom = one_step_denom + distant_coherence_weight * distant_denom
+    return total_loss / total_denom
 
 if __name__ == "__main__":
     from utils.datasets import Dataset, get_utils_and_times_to_terminals
