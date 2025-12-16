@@ -185,9 +185,7 @@ class ReplayBuffer(Dataset):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
         self.max_size = get_size(self._dict)
-        self.size = 0
         self.pointer = 0
 
     def add_trajectory(self, trajectory: Sequence[dict], discount: float):
