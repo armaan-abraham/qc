@@ -136,7 +136,6 @@ def main(_):
             ds = Dataset.create(discount=discount, **ds_dict)
 
         return ds
-    
     train_dataset = process_train_dataset(train_dataset)
     example_batch = train_dataset.sample_in_trajectories(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount, sample_method=FLAGS.dataset_sample_method)
     

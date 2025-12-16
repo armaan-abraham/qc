@@ -50,7 +50,7 @@ class Dataset(FrozenDict):
     """Dataset class."""
 
     @classmethod
-    def create(cls, discount, freeze=True, **fields):
+    def create(cls, discount, freeze=True, size=None, **fields):
         """Create a dataset from the fields.
 
         Args:
@@ -76,25 +76,27 @@ class Dataset(FrozenDict):
         data['times_to_terminals'] = times_to_terminals
         if freeze:
             jax.tree_util.tree_map(lambda arr: arr.setflags(write=False), data)
-        instance = cls(data)
+        instance = cls(data, size=size)
         instance.discount = discount
         return instance
     
     def init_term_locs(self):
+        print("Dataset size", self.size)
         # Store terminal locations for sampling within episodes
         self.terminal_locs = np.nonzero(self['terminals'] > 0)[0]
+        # Only keep terminals that are within the dataset size
+        self.terminal_locs = self.terminal_locs[self.terminal_locs < self.size]
         print("Num terminals in dataset:", len(self.terminal_locs))
+        print("Num completions in dataset:", np.sum(self['masks'][:self.size] == 0))
 
         # Store trajectory start locations
         self.start_locs = np.concatenate(([0], self.terminal_locs[:-1] + 1))
     
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, size=None, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.size = get_size(self._dict)
+        self.size = size if size is not None else get_size(self._dict)
         self.init_term_locs()
-
-
 
     def sample_in_trajectories(self, batch_size: int, sequence_length: int, discount: float, sample_method="contiguous"):
         """Sample transitions and return a batch of shape [batch_size, sequence_length, ...], 
@@ -171,16 +173,13 @@ class ReplayBuffer(Dataset):
             return buffer
 
         buffer_dict = jax.tree_util.tree_map(create_buffer, init_dataset)
-        buffer = cls(buffer_dict)
-        buffer.size = get_size(init_dataset)
+        buffer = cls(buffer_dict, size=get_size(init_dataset))
         buffer.pointer = buffer.size % size
         return buffer
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
         self.max_size = get_size(self._dict)
-        self.size = 0
         self.pointer = 0
 
     def add_trajectory(self, trajectory: Sequence[dict], discount: float):
