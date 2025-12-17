@@ -47,7 +47,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         q_ens = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
         assert q_ens.shape == (self.config['num_critics'], batch_size, seq_len)
 
-        q_loss = coherent_q_loss(
+        q_loss, loss_info = coherent_q_loss(
             q_ens,
             q_a_star_next,
             batch['rewards'],
@@ -69,6 +69,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             'q_a_star_next_std': q_a_star_next.std(),
             'q_a_star_next_max': q_a_star_next.max(),
             'q_a_star_next_min': q_a_star_next.min(),
+            **loss_info,
         }
         
 

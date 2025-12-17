@@ -14,7 +14,7 @@ def one_step_bellman_loss(
     targets = rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32))
     loss = jnp.sum((q - targets) ** 2)
     denom = q.size
-    return loss, denom
+    return loss, denom, {}
 
 
 def distant_coherence_loss(
@@ -69,7 +69,8 @@ def distant_coherence_loss(
         diffs,
         0.0,
     )
-    diffs_sum = jnp.sum(
+
+    mutual_diffs = jnp.sum(
         jnp.maximum(0.0, valid_diffs) ** 2
     )
     diffs_denom = valid_pair_rel_utils.size / 2 * diffs.shape[0]
@@ -77,7 +78,7 @@ def distant_coherence_loss(
     # Add lower bound loss based on utils to terminals if terminals are
     # completions
     diffs = utils_to_terminals - q
-    diffs_sum += jnp.sum(
+    completion_diffs = jnp.sum(
         jnp.where(
             terminals_are_completions,
             jnp.maximum(0.0, diffs),
@@ -86,7 +87,14 @@ def distant_coherence_loss(
     )
     diffs_denom += q.size
 
-    return diffs_sum, diffs_denom
+    diffs_sum = mutual_diffs + completion_diffs
+
+    return diffs_sum, diffs_denom, {
+        "mutual_diffs": mutual_diffs,
+        "completion_diffs": completion_diffs,
+        "frac_terminals_are_completions": jnp.mean(terminals_are_completions),
+        "frac_valid_pair_rel_utils": jnp.mean(valid_pair_rel_utils),
+    }
 
 def coherent_q_loss(
     q: jnp.ndarray,
@@ -101,14 +109,14 @@ def coherent_q_loss(
 ):
     assert q.ndim == 3
     assert q.shape[1:] == q_a_star_next.shape == rewards.shape == times_to_terminals.shape == utils_to_terminals.shape == completion_mask.shape
-    one_step_loss, one_step_denom = one_step_bellman_loss(
+    one_step_loss, one_step_denom, one_step_info = one_step_bellman_loss(
         q,
         q_a_star_next,
         rewards,
         completion_mask,
         discount,
     )
-    distant_loss, distant_denom = distant_coherence_loss(
+    distant_loss, distant_denom, distant_info = distant_coherence_loss(
         q,
         q_a_star_next,
         rewards,
@@ -120,7 +128,12 @@ def coherent_q_loss(
     )
     total_loss = one_step_loss + distant_coherence_weight * distant_loss
     total_denom = one_step_denom + distant_coherence_weight * distant_denom
-    return total_loss / total_denom
+    return total_loss / total_denom, {
+        "one_step_loss": one_step_loss,
+        "distant_loss": distant_loss,
+        **one_step_info,
+        **distant_info,
+    }
 
 if __name__ == "__main__":
     from utils.datasets import Dataset, get_utils_and_times_to_terminals
