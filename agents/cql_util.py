@@ -128,7 +128,7 @@ def distant_coherence_loss(
 
     mutual_loss = (
         (mutual_lower_bound_diffs_sum + mutual_upper_bound_diffs_sum) / 
-        jnp.maximum((mutual_lower_bound_denom + mutual_upper_bound_denom), 1)
+        jnp.maximum((mutual_lower_bound_denom), 1)
     )
 
     # Add lower bound loss based on utils to terminals if terminals are
