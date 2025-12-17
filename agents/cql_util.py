@@ -42,39 +42,26 @@ def distant_coherence_loss(
         discount,
     )  # [batch, seq_len, seq_len]
 
-    # === Lower bound loss ===
-
-    # Compare earlier q values to relative util + later q(a*)
-
-    # These are the utils at the later observations computed from the
-    # immediately subsequent reward and q(a*). These are the same values that
-    # are used in the one-step Bellman update, repeated for comparison to the
-    # earlier observations.
-    obs_post_util_to_go = repeat(
-        rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32)),
+    # === Mutual Q loss ===
+    mixed_util_from_obs_pre = pair_rel_utils + repeat(
+        q,
         "batch obs_post -> batch obs_pre obs_post",
         obs_pre=seq_len,
-    )
-    obs_post_util_to_go_discount = discount ** jnp.abs(pair_rel_times)
+    ) * discount ** (jnp.abs(pair_rel_times))
 
-    # Element i j for a sequence in the batch is the observed utility between
-    # observation i and j plus the expected utility to go from taking the
-    # optimal policy starting at observation j in terms of Q(s_j, a*), which is
-    # a lower bound on the expected utility to go for taking action a_i and then
-    # following the optimal policy, estimated by Q(s_i, a_i).
-    mixed_util_from_obs_pre = pair_rel_utils + obs_post_util_to_go_discount * obs_post_util_to_go
-    q_obs_pre = repeat(
+    opt_util_from_obs_pre = repeat(
         q,
         "batch obs_pre -> batch obs_pre obs_post",
         obs_post=seq_len,
     )
-    diffs = mixed_util_from_obs_pre - q_obs_pre
+
+    diffs = mixed_util_from_obs_pre - opt_util_from_obs_pre
     diffs_sum = jnp.sum(
         jnp.where(
             valid_pair_rel_utils,
             jnp.maximum(0.0, diffs),
             0.0,
-        ) ** 2 
+        ) ** 2
     )
     diffs_denom = valid_pair_rel_utils.size / 2
 
@@ -89,53 +76,6 @@ def distant_coherence_loss(
         ) ** 2
     )
     diffs_denom += q.size
-
-    # === Upper bound loss ===
-
-    # Compare earlier q(a*) to observed util + later q values
-    
-    # We are comparing to the earlier q(a*), which are actually one observation
-    # after the one we use to compute the relative utils, so we need to subtract
-    # the reward immediately before the q(a*) observations from the relative
-    # utils and divide by the discount.
-    rel_util = (pair_rel_utils - repeat(
-        rewards,
-        "batch obs_pre -> batch obs_pre obs_post",
-        obs_post=seq_len,
-    )) / discount
-
-    obs_post_q = repeat(
-        q,
-        "batch obs_post -> batch obs_pre obs_post",
-        obs_pre=seq_len,
-    )
-
-    obs_post_q_discount = discount ** (jnp.abs(pair_rel_times) - 1)
-
-    # Element i j for a sequence in the batch is the observed utility between
-    # observations i+1 and j plus the expected utility to go from taking action
-    # a_j and then following the optimal policy afterward in terms of Q*(s_j,
-    # a_j). Q*(s_{i+1}, a*) is an upper bound on this value.
-    mixed_util_from_obs_pre = rel_util + obs_post_q * obs_post_q_discount
-
-    # We don't need to worry about the completion mask here because we will zero
-    # out any difference elements where the time of i is not less than the time
-    # of j, which means any rows in this repeated result corresponding to
-    # terminals will be invalidated in the mask.
-    q_a_star_obs_pre = repeat(
-        q_a_star_next,
-        "batch obs_pre -> batch obs_pre obs_post",
-        obs_post=seq_len,
-    )
-    diffs = mixed_util_from_obs_pre - q_a_star_obs_pre
-    diffs_sum += jnp.sum(
-        jnp.where(
-            valid_pair_rel_utils,
-            jnp.maximum(0.0, diffs),
-            0.0,
-        ) ** 2 
-    )
-    diffs_denom += valid_pair_rel_utils.size / 2
 
     return diffs_sum, diffs_denom
 
