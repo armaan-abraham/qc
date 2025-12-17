@@ -321,7 +321,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             encoder=encoders.get('critic'),
         )
         if config['actor_type'] == 'gaussian':
-            actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True, layer_norm=config["layer_norm"])
+            actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True, layer_norm=True)
             actor_def = TanhNormal(actor_base_cls, config['action_dim'])
             actor_params = (ex_observations,)
         else:
