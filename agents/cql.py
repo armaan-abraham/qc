@@ -12,8 +12,9 @@ from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.encoders import encoder_modules
-from utils.networks import Actor, ActorVectorField, Value
+from utils.networks import Actor, ActorVectorField, Value, MLP
 from agents.cql_util import coherent_q_loss
+from rlpd_distributions import TanhNormal
 
 class Temperature(nn.Module):
     initial_temperature: float = 1.0
@@ -320,14 +321,8 @@ class CQLAgent(flax.struct.PyTreeNode):
             encoder=encoders.get('critic'),
         )
         if config['actor_type'] == 'gaussian':
-            actor_def = Actor(
-                hidden_dims=config['actor_hidden_dims'],
-                action_dim=config['action_dim'],
-                layer_norm=True,
-                encoder=encoders.get('actor'),
-                state_dependent_std=True,
-                tanh_squash=True,
-            )
+            actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True, layer_norm=config["layer_norm"])
+            actor_def = TanhNormal(actor_base_cls, config['action_dim'])
             actor_params = (ex_observations,)
         else:
             actor_def = ActorVectorField(
