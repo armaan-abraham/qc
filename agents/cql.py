@@ -15,6 +15,17 @@ from utils.encoders import encoder_modules
 from utils.networks import Actor, ActorVectorField, Value
 from agents.cql_util import coherent_q_loss
 
+class Temperature(nn.Module):
+    initial_temperature: float = 1.0
+
+    @nn.compact
+    def __call__(self) -> jnp.ndarray:
+        log_temp = self.param(
+            "log_temp",
+            init_fn=lambda key: jnp.full((), jnp.log(self.initial_temperature)),
+        )
+        return jnp.exp(log_temp)
+
 class CQLAgent(flax.struct.PyTreeNode):
     """Coherent Q learning (CQL) agent."""
 
@@ -105,8 +116,8 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         else: # gaussian
             actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
-            actor_actions_unclipped = actor_dists.mode()
-            actor_actions = jnp.clip(actor_actions_unclipped, -1, 1)
+            actor_actions = actor_dists.sample(seed=rng)
+            log_probs = actor_dists.log_prob(actor_actions)
 
             # Behavorial cloning loss
             log_probs_mean = actor_dists.log_prob(jnp.clip(batch['actions'], -1 + 1e-5, 1 - 1e-5)).mean()
@@ -115,14 +126,32 @@ class CQLAgent(flax.struct.PyTreeNode):
             # Q loss
             q_loss = -self.network.select('critic')(batch['observations'], actions=actor_actions).mean()
 
-            return bc_loss * self.config['bc_alpha'] + q_loss, {
+            # Actor entropy maximization loss
+            entropy_max_loss = (log_probs * self.network.select('alpha')()).mean()
+
+            # Alpha loss
+            alpha = self.network.select('alpha')(params=grad_params)
+            entropy = -jax.lax.stop_gradient(log_probs).mean()
+            alpha_loss = (alpha * (entropy - self.config['target_entropy'])).mean()
+
+            actor_loss = (
+                q_loss +
+                bc_loss * self.config['bc_alpha'] +
+                entropy_max_loss +
+                alpha_loss
+            )
+
+            return actor_loss, {
                 'bc_loss': bc_loss,
                 'q_loss': q_loss,
-                'actions_unclipped_mean': actor_actions_unclipped.mean(),
-                'actions_unclipped_std': actor_actions_unclipped.std(),
-                'actions_unclipped_max': actor_actions_unclipped.max(),
-                'actions_unclipped_min': actor_actions_unclipped.min(),
-                'log_probs_mean': log_probs_mean,
+                'entropy_max_loss': entropy_max_loss,
+                'alpha_loss': alpha_loss,
+                'alpha': alpha,
+                'entropy': -log_probs.mean(),
+                'actions_mean': actor_actions.mean(),
+                'actions_std': actor_actions.std(),
+                'actions_max': actor_actions.max(),
+                'actions_min': actor_actions.min(),
             }
 
     @jax.jit
@@ -235,29 +264,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
         else:
             dist = self.network.select('actor')(observations)
-
-            if greedy:
-                # For evaluation: sample from policy without epsilon-greedy exploration
-                actions = dist.sample(seed=rng)
-            else:
-                # For training: epsilon-greedy action selection
-                rng, eps_rng, sample_rng, random_rng = jax.random.split(rng, 4)
-
-                # Sample from the policy
-                policy_actions = dist.sample(seed=sample_rng)
-
-                # Generate random actions uniformly in [-1, 1]
-                random_actions = jax.random.uniform(
-                    random_rng,
-                    shape=policy_actions.shape,
-                    minval=-1.0,
-                    maxval=1.0,
-                )
-
-                # Epsilon-greedy: with probability epsilon, use random action
-                use_random = jax.random.uniform(eps_rng, shape=policy_actions.shape[:-1]) < self.config['epsilon']
-                actions = jnp.where(use_random, random_actions, policy_actions)
-
+            actions = dist.sample(seed=rng)
             actions = jnp.clip(actions, -1, 1)
             return actions
     
@@ -296,6 +303,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         config['obs_dim'] = ex_observations.shape[-1]
         batch_size, seq_len = ex_observations.shape[0:2]
 
+        config['target_entropy'] = -config['target_entropy_multiplier'] * config['action_dim']
+
         # Define encoders.
         encoders = dict()
         if config['encoder'] is not None:
@@ -316,8 +325,8 @@ class CQLAgent(flax.struct.PyTreeNode):
                 action_dim=config['action_dim'],
                 layer_norm=True,
                 encoder=encoders.get('actor'),
-                const_std=True,
-                tanh_squash=False,
+                state_dependent_std=True,
+                tanh_squash=True,
             )
             actor_params = (ex_observations,)
         else:
@@ -328,11 +337,15 @@ class CQLAgent(flax.struct.PyTreeNode):
                 encoder=encoders.get('actor'),
             )
             actor_params = (ex_observations, ex_actions, jnp.zeros((batch_size, seq_len, 1)))
+        
+        # Define the dual alpha variable
+        alpha_def = Temperature(config["init_temp"])
 
         network_info = dict(
             actor=(actor_def, actor_params),
             critic=(critic_def, (ex_observations, ex_actions)),
             target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_actions)),
+            alpha=(alpha_def, ()),
         )
 
         networks = {k: v[0] for k, v in network_info.items()}
@@ -381,9 +394,16 @@ def get_config():
 
             # Actor
             actor_type='flow', # gaussian or flow
+
+            # Flow matching actor
             actor_num_samples=16, # Number of action samples for actor flow
             flow_steps=10,  # Number of flow steps.
             actor_hidden_dims=(512, 512, 512, 512),
+
+            # Gaussian actor
+            target_entropy_multiplier=0.5,  # Multiplier to dim(A) for target entropy.
+            alpha=1.0,
+            init_temp=1.0,
 
             tau=0.005,  # Target network update rate.
             weight_decay=0,
