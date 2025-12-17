@@ -66,32 +66,32 @@ def distant_coherence_loss(
     diffs = diffs[diffs_i, diffs_j]
     valid_diffs = jnp.where(
         valid_pair_rel_utils,
-        diffs,
+        jnp.maximum(0.0, diffs),
         0.0,
     )
-
-    mutual_diffs = jnp.sum(
-        jnp.maximum(0.0, valid_diffs) ** 2
+    mutual_diffs_total = jnp.sum(
+        valid_diffs ** 2
     )
-    diffs_denom = valid_pair_rel_utils.size / 2 * diffs.shape[0]
+    diffs_denom = jnp.sum(valid_diffs > 0.0)
 
     # Add lower bound loss based on utils to terminals if terminals are
     # completions
     diffs = utils_to_terminals - q
-    completion_diffs = jnp.sum(
-        jnp.where(
-            terminals_are_completions,
-            jnp.maximum(0.0, diffs),
-            0.0,
-        ) ** 2
+    valid_diffs = jnp.where(
+        terminals_are_completions,
+        jnp.maximum(0.0, diffs),
+        0.0,
     )
-    diffs_denom += q.size
+    completion_diffs_total = jnp.sum(
+        valid_diffs ** 2
+    )
+    diffs_denom += jnp.sum(valid_diffs > 0.0)
 
-    diffs_sum = mutual_diffs + completion_diffs
+    diffs_total = mutual_diffs_total + completion_diffs_total
 
-    return diffs_sum, diffs_denom, {
-        "mutual_diffs": mutual_diffs,
-        "completion_diffs": completion_diffs,
+    return diffs_total, diffs_denom, {
+        "mutual_diffs": mutual_diffs_total,
+        "completion_diffs": completion_diffs_total,
         "frac_terminals_are_completions": jnp.mean(terminals_are_completions),
         "frac_valid_pair_rel_utils": jnp.mean(valid_pair_rel_utils),
     }
