@@ -12,9 +12,8 @@ def one_step_bellman_loss(
     discount: float,
 ):
     targets = rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32))
-    loss = jnp.sum((q - targets) ** 2)
-    denom = q.size
-    return loss, denom
+    loss = jnp.mean((q - targets) ** 2)
+    return loss
 
 
 def distant_coherence_loss(
@@ -26,6 +25,8 @@ def distant_coherence_loss(
     terminals_are_completions: jnp.ndarray,
     completion_mask: jnp.ndarray,
     discount: float,
+    distant_coherence_weight: float,
+    completion_coherence_weight: float,
 ):
 
     batch_size, seq_len = q.shape
@@ -69,26 +70,14 @@ def distant_coherence_loss(
         obs_post=seq_len,
     )
     diffs = mixed_util_from_obs_pre - q_obs_pre
-    diffs_sum = jnp.sum(
+    mutual_lower_bound_diffs_sum = jnp.sum(
         jnp.where(
             valid_pair_rel_utils,
             jnp.maximum(0.0, diffs),
             0.0,
         ) ** 2 
     )
-    diffs_denom = valid_pair_rel_utils.sum()
-
-    # Add lower bound loss based on utils to terminals if terminals are
-    # completions
-    diffs = utils_to_terminals - q
-    diffs_sum += jnp.sum(
-        jnp.where(
-            terminals_are_completions,
-            jnp.maximum(0.0, diffs),
-            0.0,
-        ) ** 2
-    )
-    diffs_denom += jnp.sum(terminals_are_completions)
+    mutual_lower_bound_denom = valid_pair_rel_utils.sum()
 
     # === Upper bound loss ===
 
@@ -128,16 +117,36 @@ def distant_coherence_loss(
         obs_post=seq_len,
     )
     diffs = mixed_util_from_obs_pre - q_a_star_obs_pre
-    diffs_sum += jnp.sum(
+    mutual_upper_bound_diffs_sum = jnp.sum(
         jnp.where(
             valid_pair_rel_utils,
             jnp.maximum(0.0, diffs),
             0.0,
         ) ** 2 
     )
-    diffs_denom += valid_pair_rel_utils.sum()
+    mutual_upper_bound_denom = valid_pair_rel_utils.sum()
 
-    return diffs_sum, diffs_denom
+    mutual_loss = (
+        (mutual_lower_bound_diffs_sum + mutual_upper_bound_diffs_sum) / 
+        jnp.maximum((mutual_lower_bound_denom + mutual_upper_bound_denom), 1)
+    )
+
+    # Add lower bound loss based on utils to terminals if terminals are
+    # completions
+    diffs = utils_to_terminals - q
+    completion_loss = jnp.sum(
+        jnp.where(
+            terminals_are_completions,
+            jnp.maximum(0.0, diffs),
+            0.0,
+        ) ** 2
+    ) / jnp.maximum(jnp.sum(terminals_are_completions), 1)
+
+    coherence_loss = distant_coherence_weight * (
+        mutual_loss + completion_coherence_weight * completion_loss
+    )
+
+    return coherence_loss
 
 def coherent_q_loss(
     q: jnp.ndarray,
@@ -149,17 +158,18 @@ def coherent_q_loss(
     completion_mask: jnp.ndarray,
     discount: float,
     distant_coherence_weight: float,
+    completion_coherence_weight: float,
 ):
     assert q.ndim == 2
     assert q.shape == q_a_star_next.shape == rewards.shape == times_to_terminals.shape == utils_to_terminals.shape == completion_mask.shape
-    one_step_loss, one_step_denom = one_step_bellman_loss(
+    one_step_loss = one_step_bellman_loss(
         q,
         q_a_star_next,
         rewards,
         completion_mask,
         discount,
     )
-    distant_loss, distant_denom = distant_coherence_loss(
+    distant_loss = distant_coherence_loss(
         q,
         q_a_star_next,
         rewards,
@@ -168,10 +178,11 @@ def coherent_q_loss(
         terminals_are_completions,
         completion_mask,
         discount,
+        distant_coherence_weight,
+        completion_coherence_weight,
     )
-    total_loss = one_step_loss + distant_coherence_weight * distant_loss
-    total_denom = one_step_denom + distant_coherence_weight * distant_denom
-    return total_loss / total_denom
+    total_loss = one_step_loss + distant_loss
+    return total_loss
 
 if __name__ == "__main__":
     from utils.datasets import Dataset, get_utils_and_times_to_terminals
