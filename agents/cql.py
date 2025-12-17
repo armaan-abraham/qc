@@ -47,10 +47,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         q_ens = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
         assert q_ens.shape == (self.config['num_critics'], batch_size, seq_len)
 
-        q_loss_ens = jax.vmap(
-            coherent_q_loss,
-            in_axes=(0, None, None, None, None, None, None, None, None)
-        )(
+        q_loss = coherent_q_loss(
             q_ens,
             q_a_star_next,
             batch['rewards'],
@@ -61,9 +58,6 @@ class CQLAgent(flax.struct.PyTreeNode):
             self.config['discount'],
             self.config['distant_coherence_weight'],
         )
-        assert q_loss_ens.shape == (self.config['num_critics'],)
-
-        q_loss = jnp.mean(q_loss_ens)
 
         return q_loss, {
             'critic_loss': q_loss,

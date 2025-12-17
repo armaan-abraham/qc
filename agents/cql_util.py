@@ -28,7 +28,7 @@ def distant_coherence_loss(
     discount: float,
 ):
 
-    batch_size, seq_len = q.shape
+    ens_size, batch_size, seq_len = q.shape
     assert jnp.issubdtype(q.dtype, jnp.floating)
     assert jnp.issubdtype(q_a_star_next.dtype, jnp.floating)
     assert jnp.issubdtype(rewards.dtype, jnp.floating)
@@ -42,28 +42,37 @@ def distant_coherence_loss(
         discount,
     )  # [batch, seq_len, seq_len]
 
+    pair_rel_utils = repeat(
+        pair_rel_utils,
+        "batch obs_pre obs_post -> ens batch obs_pre obs_post",
+        ens=ens_size,
+    )
+
     # === Mutual Q loss ===
     mixed_util_from_obs_pre = pair_rel_utils + repeat(
         q,
-        "batch obs_post -> batch obs_pre obs_post",
+        "ens batch obs_post -> 1 ens batch obs_pre obs_post",
         obs_pre=seq_len,
     ) * discount ** (jnp.abs(pair_rel_times))
 
     opt_util_from_obs_pre = repeat(
         q,
-        "batch obs_pre -> batch obs_pre obs_post",
+        "ens batch obs_pre -> ens 1 batch obs_pre obs_post",
         obs_post=seq_len,
     )
 
     diffs = mixed_util_from_obs_pre - opt_util_from_obs_pre
-    diffs_sum = jnp.sum(
-        jnp.where(
-            valid_pair_rel_utils,
-            jnp.maximum(0.0, diffs),
-            0.0,
-        ) ** 2
+    diffs_i, diffs_j = jnp.triu_indices(ens_size)
+    diffs = diffs[diffs_i, diffs_j]
+    valid_diffs = jnp.where(
+        valid_pair_rel_utils,
+        diffs,
+        0.0,
     )
-    diffs_denom = valid_pair_rel_utils.size / 2
+    diffs_sum = jnp.sum(
+        jnp.maximum(0.0, valid_diffs) ** 2
+    )
+    diffs_denom = valid_pair_rel_utils.size / 2 * diffs.shape[0]
 
     # Add lower bound loss based on utils to terminals if terminals are
     # completions
@@ -90,8 +99,8 @@ def coherent_q_loss(
     discount: float,
     distant_coherence_weight: float,
 ):
-    assert q.ndim == 2
-    assert q.shape == q_a_star_next.shape == rewards.shape == times_to_terminals.shape == utils_to_terminals.shape == completion_mask.shape
+    assert q.ndim == 3
+    assert q.shape[1:] == q_a_star_next.shape == rewards.shape == times_to_terminals.shape == utils_to_terminals.shape == completion_mask.shape
     one_step_loss, one_step_denom = one_step_bellman_loss(
         q,
         q_a_star_next,
@@ -147,8 +156,12 @@ if __name__ == "__main__":
         [
             [5, 7, 9, 11],
             [42, 44, 46, 48],
-        ], dtype=jnp.float32
+        ], 
+        dtype=jnp.float32
     )
+    q = jnp.stack([q, q + 1.0], axis=0)  # ens size 2
+    print("q")
+    print(q)
 
     
     utils_to_terminals = []
