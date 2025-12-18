@@ -53,7 +53,9 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         # Sample actions for next observations
         if self.config['actor_type'] == 'gaussian':
-            a_star_next, a_star_next_log_prob = self.network.select('actor')(batch['next_observations']).sample_and_log_prob(seed=sample_rng)
+            a_star_next_dist = self.network.select('actor')(batch['next_observations'])
+            a_star_next = a_star_next_dist.sample(seed=sample_rng)
+            a_star_next_log_prob = a_star_next_dist.log_prob(a_star_next)
             assert a_star_next_log_prob.shape == (batch_size, seq_len)
         else:
             # Flow
