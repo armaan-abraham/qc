@@ -52,7 +52,12 @@ class CQLAgent(flax.struct.PyTreeNode):
         rng, sample_rng = jax.random.split(rng)
 
         # Sample actions for next observations
-        a_star_next, a_star_next_dist = self.sample_actions(batch['next_observations'], rng=sample_rng, greedy=True)
+        if self.config['actor_type'] == 'gaussian':
+            a_star_next, a_star_next_log_prob = self.network.select('actor')(batch['next_observations']).sample_and_log_prob(seed=sample_rng)
+            assert a_star_next_log_prob.shape == (batch_size, seq_len)
+        else:
+            # Flow
+            a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng, greedy=True)
         assert a_star_next.shape == (batch_size, seq_len, self.config['action_dim'])
 
         # Compute Q values for policy-selected actions at next observations. This is V*
@@ -62,8 +67,6 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         # If SAC, we need to add the entropy term to each v_next
         if self.config['actor_type'] == 'gaussian':
-            a_star_next_log_prob = a_star_next_dist.log_prob(a_star_next)
-            assert a_star_next_log_prob.shape == (batch_size, seq_len)
             v_next = v_next - (self.network.select('alpha')() * a_star_next_log_prob) * batch['masks']
 
         q_ens = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
@@ -272,12 +275,12 @@ class CQLAgent(flax.struct.PyTreeNode):
             q = reduce(q_ens, 'ensemble batch sample -> batch sample', 'mean')
             assert q.shape == (num_observations, self.config['actor_num_samples'])
 
-            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],)), None
+            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
         else:
             dist = self.network.select('actor')(observations)
             actions = dist.sample(seed=rng)
             actions = jnp.clip(actions, -1, 1)
-            return actions, dist
+            return actions
     
     @jax.jit
     def compute_flow_actions(
