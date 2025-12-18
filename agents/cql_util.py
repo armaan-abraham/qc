@@ -6,12 +6,12 @@ from utils.datasets import get_pair_rel_utils
 
 def one_step_bellman_loss(
     q: jnp.ndarray,
-    q_a_star_next: jnp.ndarray,
+    v_next: jnp.ndarray,
     rewards: jnp.ndarray,
     completion_mask: jnp.ndarray,
     discount: float,
 ):
-    targets = rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32))
+    targets = rewards + discount * v_next * (1.0 - completion_mask.astype(jnp.float32))
     loss = jnp.sum((q - targets) ** 2)
     denom = q.size
     return loss, denom
@@ -19,7 +19,7 @@ def one_step_bellman_loss(
 
 def distant_coherence_loss(
     q: jnp.ndarray,
-    q_a_star_next: jnp.ndarray,
+    v_next: jnp.ndarray,
     rewards: jnp.ndarray,
     times_to_terminals: jnp.ndarray,
     utils_to_terminals: jnp.ndarray,
@@ -30,7 +30,7 @@ def distant_coherence_loss(
 
     batch_size, seq_len = q.shape
     assert jnp.issubdtype(q.dtype, jnp.floating)
-    assert jnp.issubdtype(q_a_star_next.dtype, jnp.floating)
+    assert jnp.issubdtype(v_next.dtype, jnp.floating)
     assert jnp.issubdtype(rewards.dtype, jnp.floating)
     assert jnp.issubdtype(times_to_terminals.dtype, jnp.integer)
     assert jnp.issubdtype(utils_to_terminals.dtype, jnp.floating)
@@ -51,7 +51,7 @@ def distant_coherence_loss(
     # are used in the one-step Bellman update, repeated for comparison to the
     # earlier observations.
     obs_post_util_to_go = repeat(
-        rewards + discount * q_a_star_next * (1.0 - completion_mask.astype(jnp.float32)),
+        rewards + discount * v_next * (1.0 - completion_mask.astype(jnp.float32)),
         "batch obs_post -> batch obs_pre obs_post",
         obs_pre=seq_len,
     )
@@ -123,7 +123,7 @@ def distant_coherence_loss(
     # of j, which means any rows in this repeated result corresponding to
     # terminals will be invalidated in the mask.
     q_a_star_obs_pre = repeat(
-        q_a_star_next,
+        v_next,
         "batch obs_pre -> batch obs_pre obs_post",
         obs_post=seq_len,
     )

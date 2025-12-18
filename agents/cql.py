@@ -50,11 +50,21 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert seq_len == self.config['horizon_length']
         assert batch_size == self.config['batch_size']
         rng, sample_rng = jax.random.split(rng)
-        a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng, greedy=True)
+
+        # Sample actions for next observations
+        a_star_next, a_star_next_dist = self.sample_actions(batch['next_observations'], rng=sample_rng, greedy=True)
         assert a_star_next.shape == (batch_size, seq_len, self.config['action_dim'])
-        q_a_star_next_ens = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], actions=a_star_next))
-        assert q_a_star_next_ens.shape == (self.config['num_critics'], batch_size, seq_len)
-        q_a_star_next = reduce(q_a_star_next_ens, 'ensemble batch seq -> batch seq', 'mean')
+
+        # Compute Q values for policy-selected actions at next observations. This is V*
+        v_next_ens = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], actions=a_star_next))
+        assert v_next_ens.shape == (self.config['num_critics'], batch_size, seq_len)
+        v_next = reduce(v_next_ens, 'ensemble batch seq -> batch seq', 'mean')
+
+        # If SAC, we need to add the entropy term to each v_next
+        if self.config['actor_type'] == 'gaussian':
+            a_star_next_log_prob = a_star_next_dist.log_prob(a_star_next)
+            assert a_star_next_log_prob.shape == (batch_size, seq_len)
+            v_next = v_next - (self.network.select('alpha')() * a_star_next_log_prob) * batch['masks']
 
         q_ens = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
         assert q_ens.shape == (self.config['num_critics'], batch_size, seq_len)
@@ -64,7 +74,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             in_axes=(0, None, None, None, None, None, None, None, None)
         )(
             q_ens,
-            q_a_star_next,
+            v_next,
             batch['rewards'],
             batch['times_to_terminals'],
             batch['utils_to_terminals'],
@@ -83,10 +93,10 @@ class CQLAgent(flax.struct.PyTreeNode):
             'q_std': q_ens.std(),
             'q_max': q_ens.max(),
             'q_min': q_ens.min(),
-            'q_a_star_next_mean': q_a_star_next.mean(),
-            'q_a_star_next_std': q_a_star_next.std(),
-            'q_a_star_next_max': q_a_star_next.max(),
-            'q_a_star_next_min': q_a_star_next.min(),
+            'v_next_mean': v_next.mean(),
+            'v_next_std': v_next.std(),
+            'v_next_max': v_next.max(),
+            'v_next_min': v_next.min(),
         }
         
 
@@ -262,12 +272,12 @@ class CQLAgent(flax.struct.PyTreeNode):
             q = reduce(q_ens, 'ensemble batch sample -> batch sample', 'mean')
             assert q.shape == (num_observations, self.config['actor_num_samples'])
 
-            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
+            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],)), None
         else:
             dist = self.network.select('actor')(observations)
             actions = dist.sample(seed=rng)
             actions = jnp.clip(actions, -1, 1)
-            return actions
+            return actions, dist
     
     @jax.jit
     def compute_flow_actions(
@@ -388,6 +398,7 @@ def get_config():
             distant_coherence_weight=1.0,
 
             # Actor
+            # For gaussian actor, SAC is used
             actor_type='flow', # gaussian or flow
 
             # Flow matching actor
