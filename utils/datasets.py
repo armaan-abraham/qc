@@ -136,6 +136,23 @@ class Dataset(FrozenDict):
 
             # Wrap around indices that exceed episode length
             idxs = idxs % lens[:, None]
+        elif sample_method.startswith("fixed_interval_"):
+            interval = int(sample_method.split("_")[-1])
+
+            start_idxs = (np.random.random(batch_size) * lens).astype(np.int64)
+
+            offsets = np.concatenate(
+                [
+                    np.zeros((batch_size, 1), dtype=np.int64),
+                    np.full(shape=(batch_size, sequence_length - 1), fill_value=interval, dtype=np.int64),
+                ],
+                axis=1
+            )
+
+            idxs = start_idxs[:, None] + np.cumsum(offsets, axis=1)
+
+            # Wrap around indices that exceed episode length
+            idxs = idxs % lens[:, None]
         elif sample_method == "geometric":
             assert sequence_length == 2
 
