@@ -68,7 +68,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         v_next = reduce(v_next_ens, 'ensemble batch seq -> batch seq', 'mean')
 
         # If SAC, we need to add the entropy term to each v_next
-        if self.config['actor_type'] == 'gaussian':
+        if self.config['actor_type'] == 'gaussian' and self.config['entropy_backup']:
             v_next = v_next - (self.network.select('alpha')() * a_star_next_log_prob) * batch['masks']
 
         q_ens = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
@@ -415,6 +415,7 @@ def get_config():
             target_entropy_multiplier=0.5,  # Multiplier to dim(A) for target entropy.
             alpha=1.0,
             init_temp=1.0,
+            entropy_backup=False,
 
             tau=0.005,  # Target network update rate.
             weight_decay=0,
