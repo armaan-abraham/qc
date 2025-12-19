@@ -153,10 +153,7 @@ def main(_):
 
     # Setup logging.
     prefixes = ["eval", "env"]
-    if FLAGS.offline_steps > 0:
-        prefixes.append("offline_agent")
-    if FLAGS.online_steps > 0:
-        prefixes.append("online_agent")
+    prefixes.append("online_agent")
 
     logger = LoggingHelper(
         csv_loggers={prefix: CsvLogger(os.path.join(FLAGS.save_dir, f"{prefix}.csv")) 
