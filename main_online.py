@@ -245,8 +245,7 @@ def main(_):
                 sequence_length=FLAGS.horizon_length)
             
             for k in dataset_batch:
-                assert dataset_batch[k].shape == replay_batch[k].shape
-            
+                assert dataset_batch[k].shape == replay_batch[k].shape, (k, dataset_batch[k].shape, replay_batch[k].shape)
             
             batch = {k: np.concatenate([
                 dataset_batch[k].reshape((FLAGS.utd_ratio, config["batch_size"] // 2) + dataset_batch[k].shape[1:]), 
