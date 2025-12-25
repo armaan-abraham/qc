@@ -136,7 +136,7 @@ def main(_):
         return ds
     
     train_dataset = process_train_dataset(train_dataset)
-    example_batch = train_dataset.sample(())
+    example_batch = train_dataset.sample_contiguous(config['batch_size'], sequence_length=FLAGS.horizon_length)
     
     agent_class = agents[config['agent_name']]
     agent = agent_class.create(
@@ -238,10 +238,10 @@ def main(_):
             ob = next_ob
 
         if i >= FLAGS.start_training:
-            dataset_batch = train_dataset.sample_sequence(config['batch_size'] // 2 * FLAGS.utd_ratio, 
-                        sequence_length=FLAGS.horizon_length, discount=discount)
-            replay_batch = replay_buffer.sample_sequence(FLAGS.utd_ratio * config['batch_size'] // 2, 
-                sequence_length=FLAGS.horizon_length, discount=discount)
+            dataset_batch = train_dataset.sample_contiguous(config['batch_size'] // 2 * FLAGS.utd_ratio, 
+                        sequence_length=FLAGS.horizon_length)
+            replay_batch = replay_buffer.sample_contiguous(FLAGS.utd_ratio * config['batch_size'] // 2, 
+                sequence_length=FLAGS.horizon_length)
             
             batch = {k: np.concatenate([
                 dataset_batch[k].reshape((FLAGS.utd_ratio, config["batch_size"] // 2) + dataset_batch[k].shape[1:]), 
