@@ -158,7 +158,7 @@ def main(_):
     )
 
     # transition from offline to online
-    example_batch_buff = train_dataset.sample(config['batch_size'])
+    example_batch_buff = train_dataset.sample(())
     replay_buffer = ReplayBuffer.create(example_batch_buff, size=FLAGS.buffer_size)
         
     ob, _ = env.reset()
