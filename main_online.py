@@ -158,7 +158,8 @@ def main(_):
     )
 
     # transition from offline to online
-    replay_buffer = ReplayBuffer.create(example_batch, size=FLAGS.buffer_size)
+    example_batch_buff = train_dataset.sample(config['batch_size'])
+    replay_buffer = ReplayBuffer.create(example_batch_buff, size=FLAGS.buffer_size)
         
     ob, _ = env.reset()
     
@@ -242,6 +243,10 @@ def main(_):
                         sequence_length=FLAGS.horizon_length)
             replay_batch = replay_buffer.sample_contiguous(FLAGS.utd_ratio * config['batch_size'] // 2, 
                 sequence_length=FLAGS.horizon_length)
+            
+            for k in dataset_batch:
+                assert dataset_batch[k].shape == replay_batch[k].shape
+            
             
             batch = {k: np.concatenate([
                 dataset_batch[k].reshape((FLAGS.utd_ratio, config["batch_size"] // 2) + dataset_batch[k].shape[1:]), 
