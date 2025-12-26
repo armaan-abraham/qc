@@ -127,8 +127,8 @@ def coherent_q_loss(
 
     diag_i, diag_j = jnp.diag_indices(seq_len)
     target_q_one_step = rollouts_q_a_star[:, diag_i, diag_j]
-    loss = jnp.mean((q - target_q_one_step) ** 2)
-    
+    loss_numer = jnp.sum((q - target_q_one_step) ** 2)
+    loss_denom = q.size
 
     if seq_len > 1:
         valid_q_mask_batch = construct_valid_q_mask_batch(continuation_mask)
@@ -147,13 +147,14 @@ def coherent_q_loss(
         diffs_i, diffs_j = jnp.triu_indices(seq_len, k=1)
         diffs = diffs[:, diffs_i, diffs_j]
         valid_diffs = valid_q_mask_batch[:, diffs_i, diffs_j]
-        upward_ineq_loss = jnp.sum(
+        loss_numer += jnp.sum(
             jnp.where(
                 valid_diffs,
                 jnp.maximum(diffs, 0.0) ** 2,
                 0.0,
             )
-        ) / jnp.maximum(jnp.sum(valid_diffs), 1)
+        )
+        loss_denom += jnp.sum(valid_diffs)
 
         # Compare every q value to all previous q star values by chaining two
         # inequalities for any given observation: 
@@ -195,14 +196,14 @@ def coherent_q_loss(
         # this extra shift, but then we wouldn't be able to do the standard one-step
         # backup for every transition.
         valid_diffs = valid_q_mask_batch[:, 1:-1, 1:-1] & valid_q_mask_batch[:, 1:-1, 2:] & continuation_mask[:, :-2, None]
-        downward_ineq_loss_cross = jnp.sum(
+        loss_numer += jnp.sum(
             jnp.where(
                 valid_diffs,
                 jnp.maximum(diffs, 0.0) ** 2,
                 0,
             )
-        )
-        downward_ineq_loss_cross_denom = jnp.sum(valid_diffs)
+        ) 
+        loss_denom += jnp.sum(valid_diffs)
 
         # The above loss does not include comparisons of q_a_star and q at the same
         # observation, so we compute that separately. At any given observation, the
@@ -210,22 +211,16 @@ def coherent_q_loss(
         # observed action.
         same_obs_diffs = q[:, 1:] - q_a_star_next[:, :-1]
         valid = continuation_mask[:, :-1]
-        downward_ineq_loss_same = jnp.sum(
+        loss_numer += jnp.sum(
             jnp.where(
                 valid,
                 jnp.maximum(same_obs_diffs, 0.0) ** 2,
                 0.0,
             )
         )
-        downward_ineq_loss_same_denom = jnp.sum(valid)
-        downward_ineq_loss = (downward_ineq_loss_cross + downward_ineq_loss_same) / jnp.maximum(
-            downward_ineq_loss_cross_denom + downward_ineq_loss_same_denom,
-            1,
-        )
+        loss_denom += jnp.sum(valid)
 
-        # Upward inequality loss pushes q values up, downward pushes them down, and
-        # one step is the standard bellman loss.
-        loss += upward_ineq_loss + downward_ineq_loss
+    loss = loss_numer / loss_denom
 
     return loss
     
