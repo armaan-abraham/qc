@@ -52,7 +52,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert q_a_star_next_ens.shape == (self.config['num_critics'], batch_size, seq_len)
         q_a_star_next = reduce(q_a_star_next_ens, 'ensemble batch seq -> batch seq', 'mean')
 
-        q_ens = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
+        q_ens = self.network.select('critic')(batch['observations'], batch['actions'], params=grad_params)
         assert q_ens.shape == (self.config['num_critics'], batch_size, seq_len)
 
         q_loss_ens = jax.vmap(
@@ -118,7 +118,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             bc_loss = -log_probs_mean
 
             # Q loss
-            q_loss = -self.network.select('critic')(batch['observations'], actions=actor_actions).mean()
+            q_loss = -self.network.select('critic')(batch['observations'], actor_actions).mean()
 
             # Actor entropy maximization loss
             entropy_max_loss = (log_probs * self.network.select('alpha')()).mean()
@@ -243,7 +243,7 @@ class CQLAgent(flax.struct.PyTreeNode):
                 "batch sample obs_dim -> (batch sample) 1 obs_dim",
             )
         
-            q_ens = self.network.select("critic")(observations_seq, actions=actions_seq)
+            q_ens = self.network.select("critic")(observations_seq, actions_seq)
             assert q_ens.shape == ((self.config['num_critics'], num_observations * self.config['actor_num_samples'], 1))
             q_ens = rearrange(
                 q_ens,
