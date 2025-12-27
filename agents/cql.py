@@ -12,9 +12,10 @@ from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.encoders import encoder_modules
-from utils.networks import Actor, ActorVectorField, Value, MLP
+from utils.networks import Actor, ActorVectorField, Value
 from agents.cql_util import coherent_q_loss
 from rlpd_distributions import TanhNormal
+from rlpd_networks import MLP, StateActionValue, Ensemble
 
 class Temperature(nn.Module):
     initial_temperature: float = 1.0
@@ -305,14 +306,17 @@ class CQLAgent(flax.struct.PyTreeNode):
             encoders['actor'] = encoder_module()
 
         # Define networks.
-        critic_def = Value(
-            hidden_dims=config['critic_hidden_dims'],
-            layer_norm=True,
-            num_ensembles=config['num_critics'],
-            encoder=encoders.get('critic'),
+        critic_base_cls = partial(
+            MLP,
+            hidden_dims=config['value_hidden_dims'],
+            activate_final=True,
+            use_layer_norm=True,
         )
+        critic_cls = partial(StateActionValue, base_cls=critic_base_cls)
+        critic_def = Ensemble(critic_cls, num=config["num_critics"])
+
         if config['actor_type'] == 'gaussian':
-            actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True, layer_norm=True)
+            actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True)
             actor_def = TanhNormal(actor_base_cls, config['action_dim'])
             actor_params = (ex_observations,)
         else:
