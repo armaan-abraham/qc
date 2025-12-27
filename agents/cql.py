@@ -308,7 +308,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         # Define networks.
         critic_base_cls = partial(
             MLP,
-            hidden_dims=config['value_hidden_dims'],
+            hidden_dims=config["critic_hidden_dims"],
             activate_final=True,
             use_layer_norm=True,
         )
