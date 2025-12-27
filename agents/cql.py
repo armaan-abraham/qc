@@ -48,7 +48,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         rng, sample_rng = jax.random.split(rng)
         a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng)
         assert a_star_next.shape == (batch_size, seq_len, self.config['action_dim'])
-        q_a_star_next_ens = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], actions=a_star_next))
+        q_a_star_next_ens = jax.lax.stop_gradient(self.network.select('target_critic')(batch['next_observations'], a_star_next))
         assert q_a_star_next_ens.shape == (self.config['num_critics'], batch_size, seq_len)
         q_a_star_next = reduce(q_a_star_next_ens, 'ensemble batch seq -> batch seq', 'mean')
 
