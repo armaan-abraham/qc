@@ -307,19 +307,19 @@ class CQLAgent(flax.struct.PyTreeNode):
         # Define networks.
         critic_def = Value(
             hidden_dims=config['critic_hidden_dims'],
-            layer_norm=True,
+            layer_norm=config['layer_norm'],
             num_ensembles=config['num_critics'],
             encoder=encoders.get('critic'),
         )
         if config['actor_type'] == 'gaussian':
-            actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True, layer_norm=True)
+            actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True, layer_norm=config['actor_layer_norm'])
             actor_def = TanhNormal(actor_base_cls, config['action_dim'])
             actor_params = (ex_observations,)
         else:
             actor_def = ActorVectorField(
                 hidden_dims=config['actor_hidden_dims'],
                 action_dim=config['action_dim'],
-                layer_norm=True,
+                layer_norm=config['actor_layer_norm'],
                 encoder=encoders.get('actor'),
             )
             actor_params = (ex_observations, ex_actions, jnp.zeros((batch_size, seq_len, 1)))
@@ -376,10 +376,12 @@ def get_config():
             # Critic
             critic_hidden_dims=(512, 512, 512, 512),
             num_critics=2,
+            layer_norm=True,  # Whether to use layer normalization for the critic.
 
             # Actor
             actor_type='flow', # gaussian or flow
             actor_hidden_dims=(512, 512, 512, 512),
+            actor_layer_norm=True,  # Whether to use layer normalization for the actor.
 
             # Flow actor
             actor_num_samples=16, # Number of action samples for actor flow
