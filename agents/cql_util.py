@@ -175,53 +175,30 @@ def coherent_q_loss(
             completion_mask[:, 1:-1],
             discount,
         )
+        # Insert q along the diagonal and push everything else to the right
+        rollouts_q = jnp.pad(rollouts_q, ((0,0),(0,1),(1,0)))
+        diag_i, diag_j = jnp.diag_indices(seq_len-1)
+        rollouts_q = rollouts_q.at[:, diag_i, diag_j].set(q[:, 1:])
+        # Element i, j for i >= j in rollouts_q corresponds to the observed
+        # utility taking actions i to j-1 and then following the optimal policy
+        # afterwards (estimated by q).
+
         # This is the utility for starting at the indexed observation and following
         # the optimal policy
         q_a_star_next_expand = repeat(
-            q_a_star_next[:, :-2],
+            q_a_star_next[:, :-1],
             "batch seq_obs -> batch seq_obs seq_act",
-            seq_act=seq_len-2
+            seq_act=seq_len-1
         )
         diffs = rollouts_q - q_a_star_next_expand
-        # The valid mask invalidates after discontinuations because for computing q
-        # a star values, we only need the next observation which is provided at the
-        # same index for each observation. However, here we are actually using the
-        # next observation by using subsequent indexes in the same observation array
-        # because we're using the corresponding observed actions. This necessitates
-        # the 2: shift. The continuation mask with :-2 indexing comes from the fact
-        # that we have only computed q a star given the next observation array which
-        # is standard for the one-step backup. We could in principle instead compute
-        # q a star values for the observation array, which would allow us to omit
-        # this extra shift, but then we wouldn't be able to do the standard one-step
-        # backup for every transition.
-        valid_diffs = valid_q_mask_batch[:, 1:-1, 1:-1] & valid_q_mask_batch[:, 1:-1, 2:] & continuation_mask[:, :-2, None]
-        downward_ineq_loss_cross = jnp.sum(
+        valid_diffs = valid_q_mask_batch[:, 1:, 1:] & continuation_mask[:, :-1, None]
+        downward_ineq_loss = jnp.sum(
             jnp.where(
                 valid_diffs,
                 jnp.maximum(diffs, 0.0) ** 2,
                 0,
             )
-        )
-        downward_ineq_loss_cross_denom = jnp.sum(valid_diffs)
-
-        # The above loss does not include comparisons of q_a_star and q at the same
-        # observation, so we compute that separately. At any given observation, the
-        # Q function for the optimal action should be larger than that for the
-        # observed action.
-        same_obs_diffs = q[:, 1:] - q_a_star_next[:, :-1]
-        valid = continuation_mask[:, :-1]
-        downward_ineq_loss_same = jnp.sum(
-            jnp.where(
-                valid,
-                jnp.maximum(same_obs_diffs, 0.0) ** 2,
-                0.0,
-            )
-        )
-        downward_ineq_loss_same_denom = jnp.sum(valid)
-        downward_ineq_loss = (downward_ineq_loss_cross + downward_ineq_loss_same) / jnp.maximum(
-            downward_ineq_loss_cross_denom + downward_ineq_loss_same_denom,
-            1,
-        )
+        ) / jnp.maximum(jnp.sum(valid_diffs), 1)
 
         # Upward inequality loss pushes q values up, downward pushes them down, and
         # one step is the standard bellman loss.
@@ -234,36 +211,49 @@ if __name__ == "__main__":
 
     discount = 0.9
 
-    rewards = jnp.array(
-        [
-            [1, 2, 3, 4],
-            [5, 7, 9, 11],
-        ]
-    )
-    q_a_star_next = jnp.array(
-        [
-            [10, 11, 12, 13],
-            [40, 42, 44, 46],
-        ]
-    )
-    completion_mask = jnp.array(
-        [
-            [0, 0, 0, 0],
-            [0, 0, 0, 1],
-        ]
-    ).astype(bool)
-    continuation_mask = jnp.array(
-        [
-            [1, 1, 1, 1],
-            [1, 1, 1, 0],
-        ]
-    ).astype(bool)
-    q = jnp.array(
-        [
-            [11, 13, 15, 17],
-            [42, 44, 46, 48],
-        ]
-    )
+    # rewards = jnp.array(
+    #     [
+    #         [1, 2, 3, 4],
+    #         [5, 7, 9, 11],
+    #     ]
+    # )
+    # q_a_star_next = jnp.array(
+    #     [
+    #         [10, 11, 12, 13],
+    #         [40, 42, 44, 46],
+    #     ]
+    # )
+    # completion_mask = jnp.array(
+    #     [
+    #         [0, 0, 0, 0],
+    #         [0, 1, 0, 1],
+    #     ]
+    # ).astype(bool)
+    # continuation_mask = jnp.array(
+    #     [
+    #         [0, 1, 0, 1],
+    #         [1, 1, 1, 0],
+    #     ]
+    # ).astype(bool)
+    # q = jnp.array(
+    #     [
+    #         [11, 13, 15, 17],
+    #         [42, 44, 46, 48],
+    #     ]
+    # )
+
+    batch_size = 8
+    seq_len = 8
+    key = jax.random.PRNGKey(0)
+    rewards = jax.random.uniform(key, (batch_size, seq_len)) * 10
+    key, subkey = jax.random.split(key)
+    q_a_star_next = jax.random.uniform(subkey, (batch_size, seq_len)) * 50
+    key, subkey = jax.random.split(key)
+    q = jax.random.uniform(subkey, (batch_size, seq_len)) * 50
+    key, subkey = jax.random.split(key)
+    completion_mask = jax.random.bernoulli(subkey, p=0.2, shape=(batch_size, seq_len))
+    key, subkey = jax.random.split(key)
+    continuation_mask = jax.random.bernoulli(subkey, p=0.7, shape=(batch_size, seq_len))
 
     q_loss = coherent_q_loss(
         q,
