@@ -373,6 +373,8 @@ def get_config():
 
             horizon_length=ml_collections.config_dict.placeholder(int), # Will be set
 
+            network_transition_interval=1,
+
             # Critic
             critic_hidden_dims=(512, 512, 512, 512),
             num_critics=2,

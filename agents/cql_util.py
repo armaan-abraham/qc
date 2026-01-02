@@ -4,30 +4,40 @@ from einops import repeat, rearrange, einsum
 
 def get_utils(
     rewards: jnp.ndarray,
-    q_next: jnp.ndarray,
+    q_next_expand: jnp.ndarray,
     completion_mask: jnp.ndarray,
     discount: float,
 ):
-    """Termination mask is 1 where episode terminates (not including episode
-    boundaries that are not terminations)."""
 
-    # Compute reward for every multi action q function
-    batch_size, seq_len = rewards.shape
+    batch_size, seq_len_trans = rewards.shape
+    seq_len_net = q_next_expand.shape[1]
+    assert (seq_len_trans - 1) % (seq_len_net - 1) == 0
+    network_transition_interval = (seq_len_trans - 1) // (seq_len_net - 1)
+
+    # Expand q_next to have same dimension as rewards, then index into final
+    # result to only include utils that end with a valid q_next
+    q_next_expand = jnp.zeros((batch_size, seq_len_net, network_transition_interval), dtype=q_next_expand.dtype)
+    q_next_expand = q_next_expand.at[:, :, 0].set(q_next_expand)
+    q_next_expand = rearrange(
+        q_next_expand,
+        "batch seq_net interval -> batch (seq_net interval)",
+    )[:, :seq_len_trans]
+    assert q_next_expand.shape == (batch_size, seq_len_trans)
 
     rewards_by_obs = jnp.concatenate(
         [
             rewards,
-            jnp.zeros((batch_size, seq_len)),
+            jnp.zeros((batch_size, seq_len_trans)),
         ],
         axis=1,
     )
-    range_idxs = jnp.arange(seq_len)[:, None] + jnp.arange(seq_len)[None, :]
+    range_idxs = jnp.arange(seq_len_trans)[:, None] + jnp.arange(seq_len_trans)[None, :]
     # Index into rewards by obs to get sequences of rewards to sum over for each observation
     rewards_by_obs = rewards_by_obs[:, range_idxs]
-    assert rewards_by_obs.shape == (batch_size, seq_len, seq_len)
+    assert rewards_by_obs.shape == (batch_size, seq_len_trans, seq_len_trans)
 
     # Multiply each observation-wise reward sequence by discounting coefficients
-    discounts = discount ** jnp.arange(seq_len)
+    discounts = discount ** jnp.arange(seq_len_trans)
 
     rewards_by_obs = rewards_by_obs * discounts
 
@@ -35,29 +45,29 @@ def get_utils(
     target_rewards = jnp.cumsum(rewards_by_obs, axis=-1)
 
     # Do zero padding trick and discounting for target q values
-    q_a_star_next_pad = jnp.concatenate(
+    q_next_expand_pad = jnp.concatenate(
         [
             # Q is 0 
             jnp.where(
                 completion_mask,
                 0.0,
-                q_next,
+                q_next_expand,
             ),
-            jnp.zeros((batch_size, seq_len)),
+            jnp.zeros((batch_size, seq_len_trans)),
         ],
         axis=-1
     )
-    range_idxs = jnp.arange(seq_len)[:, None] + jnp.arange(seq_len)[None, :]
-    target_q_a_star = q_a_star_next_pad[:, range_idxs]
-    discounts = discount ** (jnp.arange(seq_len) + 1)
-    target_q_a_star = target_q_a_star * discounts
+    range_idxs = jnp.arange(seq_len_trans)[:, None] + jnp.arange(seq_len_trans)[None, :]
+    target_q_next = q_next_expand_pad[:, range_idxs]
+    discounts = discount ** (jnp.arange(seq_len_trans) + 1)
+    target_q_next = target_q_next * discounts
 
-    target_q = target_rewards + target_q_a_star
+    target_q = target_rewards + target_q_next
 
     # Shift over predictions so that the last dimension corresponds to the last
     # action being predicted
-    src_i, src_j = jnp.triu_indices(seq_len)
-    src_j = seq_len - 1 - src_j
+    src_i, src_j = jnp.triu_indices(seq_len_trans)
+    src_j = seq_len_trans - 1 - src_j
     target_q_shift = jnp.zeros_like(target_q)
     dst_i = src_i
     dst_j = src_j + dst_i
@@ -110,9 +120,15 @@ def coherent_q_loss(
 ):
     assert completion_mask.dtype == bool
     assert continuation_mask.dtype == bool
-    assert q.shape == rewards.shape == q_a_star_next.shape
+    assert q.shape == q_a_star_next.shape
+    assert rewards.shape == completion_mask.shape == continuation_mask.shape
+    assert q.shape[0] == rewards.shape[0]
 
-    batch_size, seq_len = rewards.shape
+    batch_size, seq_len_trans = rewards.shape
+    seq_len_net = q.shape[1]
+    assert (seq_len_trans - 1) % (seq_len_net - 1) == 0
+    network_transition_interval = (seq_len_trans - 1) // (seq_len_net - 1)
+    
 
     # These are the bellman-derived values for each multi action q for observed
     # actions in terms of observed rewards and q values from the next
@@ -125,13 +141,16 @@ def coherent_q_loss(
         discount,
     )
 
-    diag_i, diag_j = jnp.diag_indices(seq_len)
-    target_q_one_step = rollouts_q_a_star[:, diag_i, diag_j]
+    rollouts_q_a_star_net = rollouts_q_a_star[:, ::network_transition_interval, ::network_transition_interval]
+
+    diag_i, diag_j = jnp.diag_indices(seq_len_net)
+    target_q_one_step = rollouts_q_a_star_net[:, diag_i, diag_j]
     loss = jnp.mean((q - target_q_one_step) ** 2)
     
 
-    if seq_len > 1:
+    if seq_len_trans > 1:
         valid_q_mask_batch = construct_valid_q_mask_batch(continuation_mask)
+        valid_q_mask_batch_net = valid_q_mask_batch[:, ::network_transition_interval, ::network_transition_interval]
         assert valid_q_mask_batch.dtype == bool
 
         # For any given observation, Q functions with fewer parametrized actions
@@ -141,12 +160,12 @@ def coherent_q_loss(
         q_expand = repeat(
             q,
             "batch seq_obs -> batch seq_obs seq_act",
-            seq_act=seq_len,
+            seq_act=seq_len_net,
         )
-        diffs = rollouts_q_a_star - q_expand
-        diffs_i, diffs_j = jnp.triu_indices(seq_len, k=1)
+        diffs = rollouts_q_a_star_net - q_expand
+        diffs_i, diffs_j = jnp.triu_indices(seq_len_net, k=1)
         diffs = diffs[:, diffs_i, diffs_j]
-        valid_diffs = valid_q_mask_batch[:, diffs_i, diffs_j]
+        valid_diffs = valid_q_mask_batch_net[:, diffs_i, diffs_j]
         upward_ineq_loss = jnp.sum(
             jnp.where(
                 valid_diffs,
