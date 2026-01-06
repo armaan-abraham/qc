@@ -41,13 +41,13 @@ def parse_commands_file(filepath: Path) -> list[str]:
     return [seg for seg in segments if seg.strip()]
 
 
-def submit_job(commands: str) -> bool:
+def submit_job(commands: str, template: str) -> bool:
     """
     Attempt to submit a job with the given commands.
     Returns True if successful, False if hit QOS limit.
     Raises exception for other errors.
     """
-    job_script = JOB_TEMPLATE.format(commands=commands)
+    job_script = template.format(commands=commands)
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
         f.write(job_script)
@@ -85,10 +85,22 @@ def main():
         type=Path,
         help="Path to txt file with commands (delimited by ====)",
     )
+    parser.add_argument(
+        "--template",
+        type=Path,
+        help="Path to custom job template file (must contain {commands} placeholder)",
+    )
     args = parser.parse_args()
 
     if not args.commands_file.exists():
         raise FileNotFoundError(f"Commands file not found: {args.commands_file}")
+
+    if args.template:
+        if not args.template.exists():
+            raise FileNotFoundError(f"Template file not found: {args.template}")
+        job_template = args.template.read_text()
+    else:
+        job_template = JOB_TEMPLATE
 
     command_segments = parse_commands_file(args.commands_file)
     print(f"Found {len(command_segments)} job(s) to submit")
@@ -98,7 +110,7 @@ def main():
         commands = command_segments[idx]
         print(f"\nSubmitting job {idx + 1}/{len(command_segments)}...")
 
-        if submit_job(commands):
+        if submit_job(commands, job_template):
             idx += 1
         else:
             print(f"Waiting {RETRY_WAIT_SECONDS}s before retry...")
