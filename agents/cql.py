@@ -106,7 +106,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             if self.config["actor_type"] == "distill-ddpg":
                 # Distillation loss.
                 rng, noise_rng = jax.random.split(rng)
-                noises = jax.random.normal(noise_rng, (batch_size, action_dim))
+                noises = jax.random.normal(noise_rng, (batch_size, seq_len, action_dim))
                 target_flow_actions = self.compute_flow_actions(batch['observations'], noises=noises)
                 actor_actions = self.network.select('actor_onestep_flow')(batch['observations'], noises, params=grad_params)
                 distill_loss = jnp.mean((actor_actions - target_flow_actions) ** 2)
