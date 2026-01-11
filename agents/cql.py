@@ -88,7 +88,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2]
         batch_size, seq_len, action_dim = batch['actions'].shape
 
-        if self.config['actor_type'] == 'flow':
+        if self.config['actor_type'] in ('flow', 'distill-ddpg'):
             rng, x_rng, t_rng = jax.random.split(rng, 3)
 
             # BC flow loss.
@@ -101,9 +101,33 @@ class CQLAgent(flax.struct.PyTreeNode):
             pred = self.network.select('actor')(batch['observations'], x_t, t, params=grad_params)
         
             bc_flow_loss = jnp.mean((pred - vel) ** 2)
+    
+            if self.config["actor_type"] == "distill-ddpg":
+                # Distillation loss.
+                rng, noise_rng = jax.random.split(rng)
+                noises = jax.random.normal(noise_rng, (batch_size, seq_len, action_dim))
+                target_flow_actions = self.compute_flow_actions(batch['observations'], noises=noises)
+                actor_actions = self.network.select('actor_onestep_flow')(batch['observations'], noises, params=grad_params)
+                distill_loss = jnp.mean((actor_actions - target_flow_actions) ** 2)
+                
+                # Q loss.
+                actor_actions = jnp.clip(actor_actions, -1, 1)
 
-            return bc_flow_loss, {
+                qs = self.network.select(f'critic')(batch['observations'], actions=actor_actions)
+                q = jnp.mean(qs, axis=0)
+                q_loss = -q.mean()
+            else:
+                distill_loss = jnp.zeros(())
+                q_loss = jnp.zeros(())
+        
+            # Total loss.
+            actor_loss = bc_flow_loss + self.config['alpha'] * distill_loss + q_loss
+
+            return actor_loss, {
+                'actor_loss': actor_loss,
+                'q_loss': q_loss,
                 'bc_flow_loss': bc_flow_loss,
+                'distill_loss': distill_loss,
             }
 
         else: # gaussian
@@ -252,12 +276,25 @@ class CQLAgent(flax.struct.PyTreeNode):
             q = reduce(q_ens, 'ensemble batch sample -> batch sample', 'mean')
             assert q.shape == (num_observations, self.config['actor_num_samples'])
 
-            return actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
-        else:
+            actions = actions[jnp.arange(num_observations), jnp.argmax(q, axis=-1)].reshape(batch_dims + (self.config['action_dim'],))
+
+        elif self.config['actor_type'] == 'distill-ddpg':
+            noises = jax.random.normal(
+                rng,
+                (
+                    *observations.shape[:-1],  # batch dims
+                    self.config['action_dim'],
+                ),
+            )
+            actions = self.network.select(f'actor_onestep_flow')(observations, noises)
+            actions = jnp.clip(actions, -1, 1)
+
+        else: # gaussian
             dist = self.network.select('actor')(observations)
             actions = dist.sample(seed=rng)
             actions = jnp.clip(actions, -1, 1)
-            return actions
+
+        return actions
     
     @jax.jit
     def compute_flow_actions(
@@ -304,6 +341,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             layer_norm=config['layer_norm'],
             num_ensembles=config['num_critics'],
         )
+        assert config['actor_type'] in ['flow', 'gaussian', 'distill-ddpg'], config['actor_type']
         if config['actor_type'] == 'gaussian':
             actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True, layer_norm=config['actor_layer_norm'])
             actor_def = TanhNormal(actor_base_cls, config['action_dim'])
@@ -316,11 +354,20 @@ class CQLAgent(flax.struct.PyTreeNode):
             )
             actor_params = (ex_observations, ex_actions, jnp.zeros((batch_size, seq_len, 1)))
         
+        # Only used for actor_type=distill-ddpg
+        actor_onestep_flow_def = ActorVectorField(
+            hidden_dims=config['actor_hidden_dims'],
+            action_dim=config['action_dim'],
+            layer_norm=config['actor_layer_norm'],
+            encoder=encoders.get('actor_onestep_flow'),
+        )
+        
         # Define the dual alpha variable
         alpha_def = Temperature(config["init_temp"])
 
         network_info = dict(
             actor=(actor_def, actor_params),
+            actor_onestep_flow=(actor_onestep_flow_def, (ex_observations, ex_actions)),
             critic=(critic_def, (ex_observations, ex_actions)),
             target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_actions)),
             alpha=(alpha_def, ()),
@@ -373,6 +420,9 @@ def get_config():
             # Flow actor
             actor_num_samples=16, # Number of action samples for actor flow
             flow_steps=10,  # Number of flow steps.
+
+            # distill-ddpg actor
+            alpha=100.0, # Behavior cloning weight
 
             # Gaussian actor
             target_entropy_multiplier=0.5,  # Multiplier to dim(A) for target entropy.
