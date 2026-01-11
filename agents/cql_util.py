@@ -110,52 +110,59 @@ def get_rectified_loss(
     chunk_continuation_mask: jnp.ndarray,
     discount: float,
     action_chunk_size: int,
+    action_chunk_eval_interval: int,
 ):
     """
-    q and v_next are expected to be provided for each chunk (q at chunk start
-    and v_next at chunk end).
+    q and v_next are expected to be provided for each eval chunk (q at chunk
+    start and v_next at chunk end).
     """
     seq_len = utils_to_seq_end.shape[1] - 1 # -1 for padding
-    batch_size, num_chunks = q.shape
+    batch_size, num_eval_chunks = q.shape
 
-    chunk_start_idx = jnp.arange(0, seq_len, action_chunk_size)
-    chunk_start_utils_to_seq_end = utils_to_seq_end[:, chunk_start_idx]
+    # Select chunks with value evaluations
+    eval_chunk_utils, eval_chunk_valids, eval_chunk_completion_mask, eval_chunk_continuation_mask = jax.tree_util.tree_map(
+        lambda x: x[:, ::action_chunk_eval_interval],
+        (chunk_utils, chunk_valids, chunk_completion_mask, chunk_continuation_mask),
+    )
+
+    eval_chunk_start_idx = jnp.arange(0, seq_len, (action_chunk_size * action_chunk_eval_interval))
+    eval_chunk_start_utils_to_seq_end = utils_to_seq_end[:, eval_chunk_start_idx]
     pairwise_time_diffs = (
          repeat(
-            jnp.arange(num_chunks),
+            jnp.arange(num_eval_chunks),
             "chunk_post -> chunk_pre chunk_post",
-            chunk_pre=num_chunks,
+            chunk_pre=num_eval_chunks,
         ) - repeat(
-            jnp.arange(num_chunks),
+            jnp.arange(num_eval_chunks),
             "chunk_pre -> chunk_pre chunk_post",
-            chunk_post=num_chunks,
+            chunk_post=num_eval_chunks,
         )
-    ) * action_chunk_size
+    ) * (action_chunk_size * action_chunk_eval_interval)
     print("pairwise time diffs")
     print(pairwise_time_diffs)
-    # Compute pairwise utilities between each chunk starting point. Element
+    # Compute pairwise utilities between each eval chunk starting point. Element
     # (i,j) for i < j is the utility from chunk i to j.
-    chunk_start_pairwise_utils = repeat(
-        chunk_start_utils_to_seq_end,
+    eval_chunk_start_pairwise_utils = repeat(
+        eval_chunk_start_utils_to_seq_end,
         "batch chunk_pre -> batch chunk_pre chunk_post",
-        chunk_post=num_chunks,
+        chunk_post=num_eval_chunks,
     ) - repeat(
-        chunk_start_utils_to_seq_end,
+        eval_chunk_start_utils_to_seq_end,
         "batch chunk_post -> batch chunk_pre chunk_post",
-        chunk_pre=num_chunks,
+        chunk_pre=num_eval_chunks,
     ) * discount ** pairwise_time_diffs
-    print("chunk start pairwise utils")
-    print(chunk_start_pairwise_utils)
+    print("eval chunk start pairwise utils")
+    print(eval_chunk_start_pairwise_utils)
     
     # Differences are valid if time diff is positive and all chunks in [i,j) are
     # valid nonterminals
     intermediates_valid = jax.vmap(all_between, in_axes=0)(
         chunk_valids & chunk_continuation_mask
-    )
+    )[:, ::action_chunk_eval_interval, ::action_chunk_eval_interval]
     print("intermediates valid")
     print(intermediates_valid.astype(jnp.int32))
     occurs_after = pairwise_time_diffs > 0
-    assert intermediates_valid.shape == (batch_size, num_chunks, num_chunks)
+    assert intermediates_valid.shape == (batch_size, num_eval_chunks, num_eval_chunks)
     pairwise_utils_valid = occurs_after & intermediates_valid
     print("pairwise utils valid")
     print(pairwise_utils_valid.astype(jnp.int32))
@@ -165,61 +172,61 @@ def get_rectified_loss(
 
     # Compute the estimated utility-to-go from the observed utils between chunks
     # plus the v_next value function estimate at the later chunk.
-    chunk_post_util_to_go = repeat(
-        chunk_utils + v_next * (discount ** action_chunk_size) * (1 - chunk_completion_mask.astype(q.dtype)),
+    eval_chunk_post_util_to_go = repeat(
+        eval_chunk_utils + v_next * (discount ** action_chunk_size) * (1 - eval_chunk_completion_mask.astype(q.dtype)),
         "batch chunk_post -> batch chunk_pre chunk_post",
-        chunk_pre=num_chunks,
+        chunk_pre=num_eval_chunks,
     )
-    chunk_post_util_to_go_discount = discount ** pairwise_time_diffs
-    mixed_util_from_chunk_pre = chunk_start_pairwise_utils + chunk_post_util_to_go * chunk_post_util_to_go_discount
+    eval_chunk_post_util_to_go_discount = discount ** pairwise_time_diffs
+    mixed_util_from_eval_chunk_pre = eval_chunk_start_pairwise_utils + eval_chunk_post_util_to_go * eval_chunk_post_util_to_go_discount
     # Mixed utils are valid if pairs are valid and the later chunk is valid (as
     # v_next is used there)
-    mixed_util_from_chunk_pre_valid = pairwise_utils_valid & repeat(
-        chunk_valids,
+    mixed_util_from_eval_chunk_pre_valid = pairwise_utils_valid & repeat(
+        eval_chunk_valids,
         "batch chunk_post -> batch chunk_pre chunk_post",
-        chunk_pre=num_chunks,
+        chunk_pre=num_eval_chunks,
     )
-    util_from_chunk_pre = repeat(
+    util_from_eval_chunk_pre = repeat(
         q,
         "batch chunk_pre -> batch chunk_pre chunk_post",
-        chunk_post=num_chunks,
+        chunk_post=num_eval_chunks,
     )
     lower_bound_loss = jnp.sum(
         jnp.maximum(
-            mixed_util_from_chunk_pre - util_from_chunk_pre,
+            mixed_util_from_eval_chunk_pre - util_from_eval_chunk_pre,
             0.0,
-        ) ** 2 * mixed_util_from_chunk_pre_valid
-    ) / jnp.maximum(jnp.sum(mixed_util_from_chunk_pre_valid.astype(jnp.int32)), 1)
+        ) ** 2 * mixed_util_from_eval_chunk_pre_valid
+    ) / jnp.maximum(jnp.sum(mixed_util_from_eval_chunk_pre_valid.astype(jnp.int32)), 1)
     print("lower bound loss", lower_bound_loss)
 
 
     # Compute upper bound loss by comparing later q values to earlier v_next values.
 
     # Compute estimated utility-to-go from the end of the earlier chunk
-    util_from_chunk_end_pre = repeat(
+    util_from_eval_chunk_end_pre = repeat(
         v_next,
         "batch chunk_pre -> batch chunk_pre chunk_post",
-        chunk_post=num_chunks,
+        chunk_post=num_eval_chunks,
     )
 
     # Compute the estimated utility-to-go from the end of the earlier chunk
     # using the observed utils between chunks plus the q value function estimate
     # at the later chunk.
     # We need to subtract the util of the earlier chunk from the relative util
-    # due to using v_next at the earlier chunk end
-    mixed_util_from_chunk_end_pre = (chunk_start_pairwise_utils - repeat(
-        chunk_utils,
+    # due to using v_next, which is at the end of the earlier chunk.
+    mixed_util_from_eval_chunk_end_pre = (eval_chunk_start_pairwise_utils - repeat(
+        eval_chunk_utils,
         "batch chunk_pre -> batch chunk_pre chunk_post",
-        chunk_post=num_chunks,
+        chunk_post=num_eval_chunks,
     )) / discount ** action_chunk_size + repeat(
         q,
         "batch chunk_post -> batch chunk_pre chunk_post",
-        chunk_pre=num_chunks,
+        chunk_pre=num_eval_chunks,
     ) * discount ** (pairwise_time_diffs - action_chunk_size)
 
     upper_bound_loss = jnp.sum(
         jnp.maximum(
-            mixed_util_from_chunk_end_pre - util_from_chunk_end_pre,
+            mixed_util_from_eval_chunk_end_pre - util_from_eval_chunk_end_pre,
             0.0,
         ) ** 2 * pairwise_utils_valid
     ) / jnp.maximum(jnp.sum(pairwise_utils_valid.astype(jnp.int32)), 1)
@@ -236,17 +243,19 @@ def get_bellman_loss(
     chunk_completion_mask: jnp.ndarray,
     discount: float,
     action_chunk_size: int,
+    action_chunk_eval_interval: int,
 ):
-    print("chunk utils")
-    print(chunk_utils)
-    targets = (chunk_utils + v_next * (discount ** action_chunk_size) * (1 - chunk_completion_mask.astype(q.dtype)))
-    print("targets")
-    print(targets)
+    # Select chunks with value evaluations
+    eval_chunk_utils, eval_chunk_valids, eval_chunk_completion_mask = jax.tree_util.tree_map(
+        lambda x: x[:, ::action_chunk_eval_interval],
+        (chunk_utils, chunk_valids, chunk_completion_mask),
+    )
+    targets = (eval_chunk_utils + v_next * (discount ** action_chunk_size) * (1 - eval_chunk_completion_mask.astype(q.dtype)))
     bellman_loss = jnp.sum(
         (
             q - targets
-        ) ** 2 * chunk_valids
-    ) / jnp.maximum(jnp.sum(chunk_valids.astype(jnp.int32)), 1)
+        ) ** 2 * eval_chunk_valids
+    ) / jnp.maximum(jnp.sum(eval_chunk_valids.astype(jnp.int32)), 1)
     return bellman_loss
 
 def get_lql_loss(
@@ -257,14 +266,24 @@ def get_lql_loss(
     continuation_mask: jnp.ndarray,
     discount: float,
     action_chunk_size: int = 1,
+    action_chunk_eval_interval: int = 1,
 ):
+    """
+    Params:
+        action_chunk_size: Number of actions for a chunked policy / value
+        function. This is also the number of actions between each q and its
+        corresponding v_next.
+        action_chunk_eval_interval: Number of chunks between each evaluation of
+        the chunked value function.
+    """
     assert jnp.issubdtype(q.dtype, jnp.floating)
     assert jnp.issubdtype(v_next.dtype, jnp.floating)
     assert jnp.issubdtype(rewards.dtype, jnp.floating)
     batch_size, seq_len = rewards.shape
-    assert seq_len % action_chunk_size == 0
+    assert seq_len % (action_chunk_size * action_chunk_eval_interval) == 0
     num_chunks = seq_len // action_chunk_size
-    assert q.shape == v_next.shape == (batch_size, num_chunks)
+    num_eval_chunks = num_chunks // action_chunk_eval_interval
+    assert q.shape == v_next.shape == (batch_size, num_eval_chunks)
     assert completion_mask.shape == continuation_mask.shape == (batch_size, seq_len)
     assert completion_mask.dtype == jnp.bool_
     assert continuation_mask.dtype == jnp.bool_
@@ -299,6 +318,7 @@ def get_lql_loss(
         chunk_completion_mask,
         discount,
         action_chunk_size,
+        action_chunk_eval_interval,
     )
     print("bellman loss", bellman_loss)
 
@@ -312,6 +332,7 @@ def get_lql_loss(
         chunk_continuation_mask,
         discount,
         action_chunk_size,
+        action_chunk_eval_interval,
     )
     print("rectified loss", rectified_loss)
 
@@ -327,12 +348,6 @@ if __name__ == "__main__":
         [
             [1, 2, 3, 4],
             [5, 7, 9, 11],
-        ], dtype=jnp.float32
-    )
-    q_a_star_next = jnp.array(
-        [
-            [10, 11, 12, 13],
-            [40, 42, 44, 46],
         ], dtype=jnp.float32
     )
     completion_mask = jnp.array(
@@ -353,8 +368,17 @@ if __name__ == "__main__":
             [42, 44, 46, 48],
         ], dtype=jnp.float32
     )
+    q_a_star_next = jnp.array(
+        [
+            [10, 11, 12, 13],
+            [40, 42, 44, 46],
+        ], dtype=jnp.float32
+    )
 
-    action_chunk_size = 1
+    action_chunk_size = 2
+    action_chunk_eval_interval = 1
+    q = q[:, ::action_chunk_size * action_chunk_eval_interval]
+    q_a_star_next = q_a_star_next[:, ::action_chunk_size * action_chunk_eval_interval]
     loss = get_lql_loss(
         q,
         q_a_star_next,
@@ -363,5 +387,6 @@ if __name__ == "__main__":
         continuation_mask,
         discount,
         action_chunk_size=action_chunk_size,
+        action_chunk_eval_interval=action_chunk_eval_interval,
     )
     print("LQL loss", loss)
