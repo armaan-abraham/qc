@@ -11,7 +11,6 @@ from einops import repeat, einsum, rearrange, reduce
 from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
-from utils.encoders import encoder_modules
 from utils.networks import Actor, ActorVectorField, Value, MLP
 from agents.cql_util import coherent_q_loss
 from rlpd_distributions import TanhNormal
@@ -287,6 +286,8 @@ class CQLAgent(flax.struct.PyTreeNode):
     ):
         assert ex_observations.ndim == 3, ex_observations.shape
         assert ex_actions.ndim == 3, ex_actions.shape
+        assert config['horizon_length'] % (config['action_chunk_size'] * config['action_chunk_eval_interval']) == 0
+        assert config['encoder'] is None, "Visual tasks are not yet supported"
 
         rng = jax.random.PRNGKey(seed)
         rng, init_rng = jax.random.split(rng, 2)
@@ -297,19 +298,11 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         config['target_entropy'] = -config['target_entropy_multiplier'] * config['action_dim']
 
-        # Define encoders.
-        encoders = dict()
-        if config['encoder'] is not None:
-            encoder_module = encoder_modules[config['encoder']]
-            encoders['critic'] = encoder_module()
-            encoders['actor'] = encoder_module()
-
         # Define networks.
         critic_def = Value(
             hidden_dims=config['critic_hidden_dims'],
             layer_norm=config['layer_norm'],
             num_ensembles=config['num_critics'],
-            encoder=encoders.get('critic'),
         )
         if config['actor_type'] == 'gaussian':
             actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True, layer_norm=config['actor_layer_norm'])
@@ -320,7 +313,6 @@ class CQLAgent(flax.struct.PyTreeNode):
                 hidden_dims=config['actor_hidden_dims'],
                 action_dim=config['action_dim'],
                 layer_norm=config['actor_layer_norm'],
-                encoder=encoders.get('actor'),
             )
             actor_params = (ex_observations, ex_actions, jnp.zeros((batch_size, seq_len, 1)))
         
@@ -343,16 +335,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         else:
             optimizer = optax.adam(learning_rate=config['lr'])
 
-        if config["max_grad_norm"] != -1.:
-            network_tx = optax.chain(
-                optax.clip_by_global_norm(config['max_grad_norm']),
-                optimizer,
-            )
-        else:
-            network_tx = optimizer
-
         network_params = network_def.init(init_rng, **network_args)['params']
-        network = TrainState.create(network_def, network_params, tx=network_tx)
+        network = TrainState.create(network_def, network_params, tx=optimizer)
 
         params = network.params
 
@@ -373,6 +357,9 @@ def get_config():
 
             horizon_length=ml_collections.config_dict.placeholder(int), # Will be set
 
+            action_chunk_size=1,
+            action_chunk_eval_interval=1,
+
             # Critic
             critic_hidden_dims=(512, 512, 512, 512),
             num_critics=2,
@@ -381,7 +368,7 @@ def get_config():
             # Actor
             actor_type='flow', # gaussian or flow
             actor_hidden_dims=(512, 512, 512, 512),
-            actor_layer_norm=True,  # Whether to use layer normalization for the actor.
+            actor_layer_norm=False,  # Whether to use layer normalization for the actor.
 
             # Flow actor
             actor_num_samples=16, # Number of action samples for actor flow
@@ -394,7 +381,6 @@ def get_config():
 
             tau=0.005,  # Target network update rate.
             weight_decay=0,
-            max_grad_norm=-1.,  # Maximum gradient norm for clipping (-1 to disable).
             discount=0.99,  # Discount factor.
             lr=3e-4,  # Learning rate.
             batch_size=256,
