@@ -113,19 +113,19 @@ class CQLAgent(flax.struct.PyTreeNode):
         # Add valid mask for action chunks
         if 'terminals' in batch:
             if action_chunk_size == 1:
-                action_chunk_valids = jnp.ones(action_chunks.shape[:-1])
+                action_chunk_valids = jnp.ones(action_chunks.shape[:-1], dtype=jnp.bool_)
             else:
                 # Action chunks are valid if every nonfinal transition is nonterminal
                 action_chunk_terminals = rearrange(
                     batch['terminals'],
                     "batch (chunk act) -> batch chunk act",
                     act=action_chunk_size,
-                )[:, ::action_chunk_eval_interval, :]
+                )[:, ::action_chunk_eval_interval, :].astype(jnp.bool_)
                 action_chunk_valids = jnp.all(
                     ~action_chunk_terminals[:, :, :-1],
                     axis=-1,
                 )
-            result['action_chunk_valids'] = action_chunk_valids.astype(jnp.bool_)
+            result['action_chunk_valids'] = action_chunk_valids
 
         if 'next_observations' in batch:
             # Next observations should come from the last transition in each eval action chunk.
