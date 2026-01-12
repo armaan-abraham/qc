@@ -173,7 +173,7 @@ def get_rectified_loss(
     mixed_util_from_eval_chunk_pre = eval_chunk_start_pairwise_utils + eval_chunk_post_util_to_go * eval_chunk_post_util_to_go_discount
     # Mixed utils are valid if pairs are valid and the later chunk is valid (as
     # v_next is used there)
-    mixed_util_from_eval_chunk_pre_valid = pairwise_utils_valid & repeat(
+    diffs_valid = pairwise_utils_valid & repeat(
         eval_chunk_valids,
         "batch chunk_post -> batch chunk_pre chunk_post",
         chunk_pre=num_eval_chunks,
@@ -187,8 +187,8 @@ def get_rectified_loss(
         jnp.maximum(
             mixed_util_from_eval_chunk_pre - util_from_eval_chunk_pre,
             0.0,
-        ) ** 2 * mixed_util_from_eval_chunk_pre_valid
-    ) / jnp.maximum(jnp.sum(mixed_util_from_eval_chunk_pre_valid.astype(jnp.int32)), 1)
+        ) ** 2 * diffs_valid
+    ) / jnp.maximum(jnp.sum(diffs_valid.astype(jnp.int32)), 1)
 
     # Compute upper bound loss by comparing later q values to earlier v_next values.
 
@@ -326,41 +326,64 @@ if __name__ == "__main__":
 
     discount = 0.9
 
-    rewards = jnp.array(
-        [
-            [1, 2, 3, 4],
-            [5, 7, 9, 11],
-        ], dtype=jnp.float32
-    )
-    completion_mask = jnp.array(
-        [
-            [0, 0, 0, 0],
-            [0, 0, 0, 1],
-        ]
-    ).astype(bool)
-    continuation_mask = jnp.array(
-        [
-            [1, 1, 1, 1],
-            [1, 1, 1, 0],
-        ]
-    ).astype(bool)
-    q = jnp.array(
-        [
-            [11, 13, 15, 17],
-            [42, 44, 46, 48],
-        ], dtype=jnp.float32
-    )
-    q_a_star_next = jnp.array(
-        [
-            [10, 11, 12, 13],
-            [40, 42, 44, 46],
-        ], dtype=jnp.float32
-    )
+    # rewards = jnp.array(
+    #     [
+    #         [1, 2, 3, 4, 5, 6, 7, 8],
+    #         [5, 7, 9, 11, 13, 15, 17, 19],
+    #     ], dtype=jnp.float32
+    # )
+    # completion_mask = jnp.array(
+    #     [
+    #         [0, 0, 0, 0, 0, 0, 0, 0],
+    #         [0, 0, 0, 0, 0, 0, 0, 1],
+    #     ]
+    # ).astype(bool)
+    # continuation_mask = jnp.array(
+    #     [
+    #         [1, 1, 1, 1, 0, 1, 0, 1],
+    #         [1, 1, 1, 1, 1, 0, 1, 0],
+    #     ]
+    # ).astype(bool)
+    # q = jnp.array(
+    #     [
+    #         [11, 13, 15, 17, 19, 21, 23, 25],
+    #         [42, 44, 46, 48, 50, 52, 54, 56],
+    #     ], dtype=jnp.float32
+    # )
+    # q_a_star_next = jnp.array(
+    #     [
+    #         [10, 11, 12, 13, 14, 15, 16, 17],
+    #         [40, 42, 44, 46, 48, 50, 52, 54],
+    #     ], dtype=jnp.float32
+    # )
 
-    action_chunk_size = 2
-    action_chunk_eval_interval = 1
-    q = q[:, ::action_chunk_size * action_chunk_eval_interval]
-    q_a_star_next = q_a_star_next[:, ::action_chunk_size * action_chunk_eval_interval]
+    # Shape constants
+    BATCH_SIZE = 4
+    SEQ_LEN = 16
+
+    key = jax.random.PRNGKey(42)
+    keys = jax.random.split(key, 5)
+
+    rewards = jax.random.uniform(keys[0], (BATCH_SIZE, SEQ_LEN), minval=1.0, maxval=15.0)
+    q_a_star_next = jax.random.uniform(keys[1], (BATCH_SIZE, SEQ_LEN), minval=10.0, maxval=50.0)
+
+    completion_mask = jnp.zeros((BATCH_SIZE, SEQ_LEN)).astype(jnp.bool_)
+    completion_mask = completion_mask.at[jnp.arange(BATCH_SIZE), jax.random.randint(keys[2], (BATCH_SIZE,), 1, SEQ_LEN)].set(True)
+    continuation_mask = jnp.ones_like(completion_mask).astype(jnp.bool_)
+
+    q = jax.random.uniform(keys[4], (BATCH_SIZE, SEQ_LEN), minval=10.0, maxval=50.0)
+
+
+    action_chunk_size = 1
+    action_chunk_eval_interval = 2
+    eval_chunk_start_idx = jnp.arange(0, rewards.shape[1], action_chunk_size * action_chunk_eval_interval)
+    q = q[:, eval_chunk_start_idx]
+    eval_chunk_end_idx = eval_chunk_start_idx + action_chunk_size - 1
+    print("q")
+    print(q)
+    q_a_star_next = q_a_star_next[:, eval_chunk_end_idx]
+    print("q_a_star_next")
+    print(q_a_star_next)
     loss = get_lql_loss(
         q,
         q_a_star_next,
