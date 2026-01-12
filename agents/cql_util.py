@@ -138,8 +138,6 @@ def get_rectified_loss(
             chunk_post=num_eval_chunks,
         )
     ) * (action_chunk_size * action_chunk_eval_interval)
-    print("pairwise time diffs")
-    print(pairwise_time_diffs)
     # Compute pairwise utilities between each eval chunk starting point. Element
     # (i,j) for i < j is the utility from chunk i to j.
     eval_chunk_start_pairwise_utils = repeat(
@@ -151,21 +149,15 @@ def get_rectified_loss(
         "batch chunk_post -> batch chunk_pre chunk_post",
         chunk_pre=num_eval_chunks,
     ) * discount ** pairwise_time_diffs
-    print("eval chunk start pairwise utils")
-    print(eval_chunk_start_pairwise_utils)
     
     # Differences are valid if time diff is positive and all chunks in [i,j) are
     # valid nonterminals
     intermediates_valid = jax.vmap(all_between, in_axes=0)(
         chunk_valids & chunk_continuation_mask
     )[:, ::action_chunk_eval_interval, ::action_chunk_eval_interval]
-    print("intermediates valid")
-    print(intermediates_valid.astype(jnp.int32))
     occurs_after = pairwise_time_diffs > 0
     assert intermediates_valid.shape == (batch_size, num_eval_chunks, num_eval_chunks)
     pairwise_utils_valid = occurs_after & intermediates_valid
-    print("pairwise utils valid")
-    print(pairwise_utils_valid.astype(jnp.int32))
 
     # Compute lower bound loss by comparing earlier q values to later v_next
     # values.
@@ -197,8 +189,6 @@ def get_rectified_loss(
             0.0,
         ) ** 2 * mixed_util_from_eval_chunk_pre_valid
     ) / jnp.maximum(jnp.sum(mixed_util_from_eval_chunk_pre_valid.astype(jnp.int32)), 1)
-    print("lower bound loss", lower_bound_loss)
-
 
     # Compute upper bound loss by comparing later q values to earlier v_next values.
 
@@ -230,8 +220,6 @@ def get_rectified_loss(
             0.0,
         ) ** 2 * pairwise_utils_valid
     ) / jnp.maximum(jnp.sum(pairwise_utils_valid.astype(jnp.int32)), 1)
-
-    print("upper bound loss", upper_bound_loss)
 
     return lower_bound_loss + upper_bound_loss
 
@@ -305,10 +293,6 @@ def get_lql_loss(
     assert chunk_utils.dtype == jnp.float32
     assert chunk_valids.dtype == jnp.bool
     assert chunk_completion_mask.dtype == jnp.bool
-    print("chunk valids")
-    print(chunk_valids.astype(jnp.int32))
-    print("chunk completions")
-    print(chunk_completion_mask.astype(jnp.int32))
 
     bellman_loss = get_bellman_loss(
         q,
@@ -320,7 +304,6 @@ def get_lql_loss(
         action_chunk_size,
         action_chunk_eval_interval,
     )
-    print("bellman loss", bellman_loss)
 
     rectified_loss = get_rectified_loss(
         q,
@@ -334,7 +317,6 @@ def get_lql_loss(
         action_chunk_size,
         action_chunk_eval_interval,
     )
-    print("rectified loss", rectified_loss)
 
     return bellman_loss + rectified_loss
 
