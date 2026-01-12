@@ -43,7 +43,16 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['terminals'].ndim == 2 # [batch, seq_len]
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2] == batch['rewards'].shape[0:2] == batch['masks'].shape[0:2] == batch['terminals'].shape[0:2]
 
-        batch_size, seq_len = batch['observations'].shape[0:2]
+
+        full_batch_size, seq_len = batch['observations'].shape[0:2]
+
+        # Only choose first 1/horizon length sequences
+        batch_size = full_batch_size // self.config['horizon_length']
+        batch = jax.tree_util.tree_map(
+            lambda x: x[:batch_size],
+            batch,
+        )
+
         rng, sample_rng = jax.random.split(rng)
         a_star_next = self.sample_actions(batch['next_observations'], rng=sample_rng)
         assert a_star_next.shape == (batch_size, seq_len, self.config['action_dim'])
@@ -89,26 +98,29 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert batch['observations'].shape[0:2] == batch['actions'].shape[0:2]
         batch_size, seq_len, action_dim = batch['actions'].shape
 
+        # Only use first action in sequence for actor update
+        observations = batch['observations'][:, 0:1, :]
+
         if self.config['actor_type'] in ('flow', 'distill-ddpg'):
             rng, x_rng, t_rng = jax.random.split(rng, 3)
 
             # BC flow loss.
-            x_0 = jax.random.normal(x_rng, (batch_size, seq_len, action_dim))
-            x_1 = batch['actions']
-            t = jax.random.uniform(t_rng, (batch_size, seq_len, 1))
+            x_0 = jax.random.normal(x_rng, (batch_size, 1, action_dim))
+            x_1 = batch['actions'][:, 0:1, :]
+            t = jax.random.uniform(t_rng, (batch_size, 1, 1))
             x_t = (1 - t) * x_0 + t * x_1
             vel = x_1 - x_0
 
-            pred = self.network.select('actor')(batch['observations'], x_t, t, params=grad_params)
+            pred = self.network.select('actor')(observations, x_t, t, params=grad_params)
         
             bc_flow_loss = jnp.mean((pred - vel) ** 2)
     
             if self.config["actor_type"] == "distill-ddpg":
                 # Distillation loss.
                 rng, noise_rng = jax.random.split(rng)
-                noises = jax.random.normal(noise_rng, (batch_size, seq_len, action_dim))
-                target_flow_actions = self.compute_flow_actions(batch['observations'], noises=noises)
-                actor_actions = self.network.select('actor_onestep_flow')(batch['observations'], noises, params=grad_params)
+                noises = jax.random.normal(noise_rng, (batch_size, 1, action_dim))
+                target_flow_actions = self.compute_flow_actions(observations, noises=noises)
+                actor_actions = self.network.select('actor_onestep_flow')(observations, noises, params=grad_params)
                 distill_loss = jnp.mean((actor_actions - target_flow_actions) ** 2)
                 
                 # Q loss.
@@ -132,6 +144,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             }
 
         else: # gaussian
+            assert False
             actor_dists = self.network.select('actor')(batch['observations'], params=grad_params)
             actor_actions = actor_dists.sample(seed=rng)
             log_probs = actor_dists.log_prob(actor_actions)
