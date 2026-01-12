@@ -12,7 +12,7 @@ from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.networks import ActorVectorField, Value, MLP
-from agents.cql_util import coherent_q_loss
+from agents.cql_util import get_lql_loss
 from rlpd_distributions import TanhNormal
 
 class Temperature(nn.Module):
@@ -60,8 +60,8 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert q_ens.shape == (self.config['num_critics'], batch_size, self.config['num_eval_chunks_per_seq'])
 
         q_loss_ens = jax.vmap(
-            coherent_q_loss,
-            in_axes=(0, None, None, None, None, None),
+            get_lql_loss,
+            in_axes=(0, None, None, None, None, None, None, None),
         )(
             q_ens,
             q_a_star_next,
@@ -69,6 +69,8 @@ class CQLAgent(flax.struct.PyTreeNode):
             ~batch['masks'].astype(bool),
             ~batch['terminals'].astype(bool),
             self.config['discount'],
+            self.config['action_chunk_size'],
+            self.config['action_chunk_eval_interval'],
         )
         assert q_loss_ens.shape == (self.config['num_critics'],)
 
