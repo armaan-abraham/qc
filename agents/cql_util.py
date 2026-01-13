@@ -17,7 +17,6 @@ def all_between(A):
     n = A.shape[0]
     
     cumsum = jnp.cumsum(A)
-    print("cumsum\n", cumsum)
     
     # Create indices
     i = jnp.arange(n)[:, None]  # (n, 1)
@@ -25,7 +24,6 @@ def all_between(A):
     
     # Prepend 0 to cumsum for easier indexing
     cumsum_padded = jnp.concatenate([jnp.array([0]), cumsum])
-    print("cumsum_padded\n", cumsum_padded)
     
     lo = jnp.minimum(i, j) + 1
     hi = jnp.maximum(i, j)
@@ -178,13 +176,11 @@ def get_rectified_loss(
     )
     eval_chunk_post_util_to_go_discount = discount ** pairwise_time_diffs
     mixed_util_from_eval_chunk_pre = eval_chunk_start_pairwise_utils + eval_chunk_post_util_to_go * eval_chunk_post_util_to_go_discount
-    print("mixed_util_from_eval_chunk_pre\n", mixed_util_from_eval_chunk_pre)
     util_from_eval_chunk_pre = repeat(
         q,
         "batch chunk_pre -> batch chunk_pre chunk_post",
         chunk_post=num_eval_chunks,
     )
-    print("util_from_eval_chunk_pre\n", util_from_eval_chunk_pre)
     # All intermediate chunks must be valid nonterminals, the start chunk must
     # be a valid nonterminal, and the end chunk must be valid (possibly
     # terminal).
@@ -197,14 +193,12 @@ def get_rectified_loss(
         "batch chunk_post -> batch chunk_pre chunk_post",
         chunk_pre=num_eval_chunks,
     )
-    print("lower bound diffs valid\n", lower_bound_diffs_valid.astype(jnp.int32))
     lower_bound_loss = jnp.sum(
         jnp.maximum(
             mixed_util_from_eval_chunk_pre - util_from_eval_chunk_pre,
             0.0,
         ) ** 2 * lower_bound_diffs_valid
     ) / jnp.maximum(jnp.sum(lower_bound_diffs_valid.astype(jnp.int32)), 1)
-    print("lower_bound_loss", lower_bound_loss)
 
     # Compute upper bound loss by comparing later q values to earlier v_next values.
 
@@ -241,14 +235,12 @@ def get_rectified_loss(
         "batch chunk_post -> batch chunk_pre chunk_post",
         chunk_pre=num_eval_chunks,
     )
-    print("upper bound diffs valid\n", upper_bound_diffs_valid.astype(jnp.int32))
     upper_bound_loss = jnp.sum(
         jnp.maximum(
             mixed_util_from_eval_chunk_end_pre - util_from_eval_chunk_end_pre,
             0.0,
         ) ** 2 * upper_bound_diffs_valid
     ) / jnp.maximum(jnp.sum(upper_bound_diffs_valid.astype(jnp.int32)), 1)
-    print("upper_bound_loss", upper_bound_loss)
     return lower_bound_loss + upper_bound_loss
 
 def get_bellman_loss(
@@ -321,7 +313,6 @@ def get_lql_loss(
         discount,
         action_chunk_size,
     )
-    print("chunk_utils\n", chunk_utils)
     assert chunk_utils.dtype == jnp.float32
     assert chunk_valids.dtype == jnp.bool
     assert chunk_completion_mask.dtype == jnp.bool
@@ -336,7 +327,6 @@ def get_lql_loss(
         action_chunk_size,
         action_chunk_eval_interval,
     )
-    print("Bellman loss:", bellman_loss)
 
     rectified_loss = get_rectified_loss(
         q,
@@ -350,7 +340,6 @@ def get_lql_loss(
         action_chunk_size,
         action_chunk_eval_interval,
     )
-    print("Rectified loss:", rectified_loss)
 
     return bellman_loss + rectified_loss
 
