@@ -90,10 +90,7 @@ class Dataset(FrozenDict):
         return batch
     
     def sample_contiguous(self, batch_size, sequence_length):
-        """Sample a batch of sequences, possibly crossing episode boundaries.
-        Unlike other sampling functions, this returns state, action, reward
-        arrays as contiguous blocks without separate next states and actions.
-        """
+        """Sample a batch of sequences, possibly crossing episode boundaries."""
         idxs = np.random.randint(self.size - sequence_length, size=batch_size)
         
 
