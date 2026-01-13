@@ -224,10 +224,10 @@ def get_rectified_loss(
         chunk_pre=num_eval_chunks,
     ) * discount ** (pairwise_time_diffs - action_chunk_size)
     # All intermediate chunks must be valid nonterminals, the start chunk must
-    # be nonterminal (possibly invalid), and the end chunk must be valid
+    # be a valid nonterminal, and the end chunk must be valid
     # (possibly terminal).
     upper_bound_diffs_valid = base_diffs_valid & repeat(
-        eval_chunk_continuation_mask,
+        eval_chunk_continuation_mask & eval_chunk_valids,
         "batch chunk_pre -> batch chunk_pre chunk_post",
         chunk_post=num_eval_chunks,
     ) & repeat(
