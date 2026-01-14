@@ -234,7 +234,7 @@ def get_rectified_loss(
         eval_chunk_valids,
         "batch chunk_post -> batch chunk_pre chunk_post",
         chunk_pre=num_eval_chunks,
-    )
+    ) & (pairwise_time_diffs > action_chunk_size)
     upper_bound_loss = jnp.sum(
         jnp.maximum(
             mixed_util_from_eval_chunk_end_pre - util_from_eval_chunk_end_pre,
@@ -450,7 +450,7 @@ if __name__ == "__main__":
 
     # Shape constants
     BATCH_SIZE = 2
-    SEQ_LEN = 4
+    SEQ_LEN = 8
 
     key = jax.random.PRNGKey(42)
     keys = jax.random.split(key, 5)
@@ -465,8 +465,8 @@ if __name__ == "__main__":
 
     q = jax.random.uniform(keys[4], (BATCH_SIZE, SEQ_LEN), minval=10.0, maxval=50.0)
 
-    action_chunk_size = 1
-    action_chunk_eval_interval = 2
+    action_chunk_size = 2
+    action_chunk_eval_interval = 1
     eval_chunk_start_idx = jnp.arange(0, rewards.shape[1], action_chunk_size * action_chunk_eval_interval)
     q = q[:, eval_chunk_start_idx]
     eval_chunk_end_idx = eval_chunk_start_idx + action_chunk_size - 1
