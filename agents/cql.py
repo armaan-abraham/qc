@@ -72,7 +72,7 @@ class CQLAgent(flax.struct.PyTreeNode):
 
         q_loss_ens, q_loss_info_ens = jax.vmap(
             get_lql_loss,
-            in_axes=(0, None, None, None, None, None, None, None),
+            in_axes=(0, None, None, None, None, None, None, None, None),
         )(
             q_ens,
             q_a_star_next,
@@ -82,6 +82,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             self.config['discount'],
             self.config['action_chunk_size'],
             self.config['action_chunk_eval_interval'],
+            self.config['rectified_loss_weight'],
         )
         assert q_loss_ens.shape == (self.config['num_critics'],)
 
@@ -515,9 +516,10 @@ def get_config():
             critic_hidden_dims=(512, 512, 512, 512),
             num_critics=2,
             layer_norm=True,  # Whether to use layer normalization for the critic.
+            rectified_loss_weight=1.0,  # Weight for the lql rectified loss.
 
             # Actor
-            actor_type='flow', # gaussian or flow
+            actor_type='flow',
             actor_hidden_dims=(512, 512, 512, 512),
             actor_layer_norm=False,  # Whether to use layer normalization for the actor.
 

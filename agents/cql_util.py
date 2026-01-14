@@ -283,6 +283,7 @@ def get_lql_loss(
     discount: float,
     action_chunk_size: int = 1,
     action_chunk_eval_interval: int = 1,
+    rectified_loss_weight: float = 1.0,
 ):
     """
     Params:
@@ -360,7 +361,7 @@ def get_lql_loss(
     for k, v in rectified_info.items():
         info[f"rectified_loss/{k}"] = v
 
-    return bellman_loss + rectified_loss, info
+    return bellman_loss + rectified_loss * rectified_loss_weight, info
 
 if __name__ == "__main__":
     print("*************************")
