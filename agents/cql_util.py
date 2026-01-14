@@ -270,7 +270,7 @@ def get_bellman_loss(
         ) ** 2 * eval_chunk_valids
     ) / jnp.maximum(jnp.sum(eval_chunk_valids.astype(jnp.int32)), 1)
     return bellman_loss, {
-        "bellman_target_mean": jnp.sum(targets * eval_chunk_valids) / jnp.sum(eval_chunk_valids) if jnp.sum(eval_chunk_valids) > 0 else 0.0,
+        "bellman_target_mean": jnp.sum(targets * eval_chunk_valids) / jnp.maximum(jnp.sum(eval_chunk_valids), 1),
         "num_valid_bellman_terms": jnp.sum(eval_chunk_valids.astype(jnp.int32)),
     }
 
