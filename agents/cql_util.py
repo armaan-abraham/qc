@@ -241,7 +241,12 @@ def get_rectified_loss(
             0.0,
         ) ** 2 * upper_bound_diffs_valid
     ) / jnp.maximum(jnp.sum(upper_bound_diffs_valid.astype(jnp.int32)), 1)
-    return lower_bound_loss + upper_bound_loss
+    return lower_bound_loss + upper_bound_loss, {
+        "lower_bound_loss": lower_bound_loss,
+        "upper_bound_loss": upper_bound_loss,
+        "num_valid_lower_bound_terms": jnp.sum(lower_bound_diffs_valid.astype(jnp.int32)),
+        "num_valid_upper_bound_terms": jnp.sum(upper_bound_diffs_valid.astype(jnp.int32)),
+    }
 
 def get_bellman_loss(
     q: jnp.ndarray,
@@ -264,7 +269,10 @@ def get_bellman_loss(
             q - targets
         ) ** 2 * eval_chunk_valids
     ) / jnp.maximum(jnp.sum(eval_chunk_valids.astype(jnp.int32)), 1)
-    return bellman_loss
+    return bellman_loss, {
+        "bellman_target_mean": jnp.sum(targets * eval_chunk_valids) / jnp.sum(eval_chunk_valids) if jnp.sum(eval_chunk_valids) > 0 else 0.0,
+        "num_valid_bellman_terms": jnp.sum(eval_chunk_valids.astype(jnp.int32)),
+    }
 
 def get_lql_loss(
     q: jnp.ndarray,
@@ -317,7 +325,7 @@ def get_lql_loss(
     assert chunk_valids.dtype == jnp.bool
     assert chunk_completion_mask.dtype == jnp.bool
 
-    bellman_loss = get_bellman_loss(
+    bellman_loss, bellman_info = get_bellman_loss(
         q,
         v_next,
         chunk_utils,
@@ -328,7 +336,7 @@ def get_lql_loss(
         action_chunk_eval_interval,
     )
 
-    rectified_loss = get_rectified_loss(
+    rectified_loss, rectified_info = get_rectified_loss(
         q,
         v_next,
         utils_to_seq_end,
@@ -341,8 +349,18 @@ def get_lql_loss(
         action_chunk_eval_interval,
     )
 
-    return bellman_loss + rectified_loss
+    info = {
+        "bellman_loss": bellman_loss,
+        "rectified_loss": rectified_loss,
+    }
 
+    for k, v in bellman_info.items():
+        info[f"bellman_loss/{k}"] = v
+    
+    for k, v in rectified_info.items():
+        info[f"rectified_loss/{k}"] = v
+
+    return bellman_loss + rectified_loss, info
 
 if __name__ == "__main__":
     print("*************************")

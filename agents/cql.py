@@ -70,7 +70,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         q_ens = self.network.select('critic')(batch_select['observations'], actions=batch_select['action_chunks'], params=grad_params)
         assert q_ens.shape == (self.config['num_critics'], batch_size, self.config['num_eval_chunks_per_seq'])
 
-        q_loss_ens = jax.vmap(
+        q_loss_ens, q_loss_info_ens = jax.vmap(
             get_lql_loss,
             in_axes=(0, None, None, None, None, None, None, None),
         )(
@@ -86,6 +86,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         assert q_loss_ens.shape == (self.config['num_critics'],)
 
         q_loss = jnp.mean(q_loss_ens)
+        q_loss_info = jax.tree_util.tree_map(jnp.mean, q_loss_info_ens)
 
         return q_loss, {
             'critic_loss': q_loss,
@@ -97,6 +98,7 @@ class CQLAgent(flax.struct.PyTreeNode):
             'q_a_star_next_std': q_a_star_next.std(),
             'q_a_star_next_max': q_a_star_next.max(),
             'q_a_star_next_min': q_a_star_next.min(),
+            **{f'lql/{k}': v for k, v in q_loss_info.items()},
         }
     
     @classmethod
