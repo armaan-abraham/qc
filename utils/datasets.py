@@ -221,14 +221,29 @@ class ReplayBuffer(Dataset):
         self.max_size = get_size(self._dict)
         self.size = 0
         self.pointer = 0
+        self.last_transition_true_terminal = True
 
     def add_transition(self, transition):
         """Add a transition to the replay buffer."""
+
+        # When adding transitions online, we need to keep the boundary between
+        # the current episode and the episode after the pointer correct.
+        this_transition_true_terminal = transition['terminals']
+
+        transition['terminals'] = 1.0
 
         def set_idx(buffer, new_element):
             buffer[self.pointer] = new_element
 
         jax.tree_util.tree_map(set_idx, self._dict, transition)
+
+        # If last transition was not a true terminal, we need to set the
+        # terminal flag to 0 for it.
+        if not self.last_transition_true_terminal:
+            prev_pointer = (self.pointer - 1) % self.max_size
+            self._dict['terminals'][prev_pointer] = 0.0
+
+        self.last_transition_true_terminal = this_transition_true_terminal
         self.pointer = (self.pointer + 1) % self.max_size
         self.size = max(self.pointer, self.size)
 
