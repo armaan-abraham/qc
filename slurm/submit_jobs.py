@@ -6,12 +6,15 @@ Each segment between delimiters runs as its own job.
 """
 
 import argparse
+import getpass
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 
 RETRY_WAIT_SECONDS = 60
+HI_PRIORITY_PARTITION = "iris-hi"
+HI_PRIORITY_MAX_JOBS = 6
 
 JOB_TEMPLATE = """#!/bin/bash
 #SBATCH --job-name=train
@@ -39,6 +42,19 @@ def parse_commands_file(filepath: Path) -> list[str]:
     segments = content.split("\n====\n")
     # Filter out empty segments
     return [seg for seg in segments if seg.strip()]
+
+
+def count_running_jobs_in_partition(partition: str) -> int:
+    """Count the number of running jobs for the current user in a partition."""
+    user = getpass.getuser()
+    result = subprocess.run(
+        ["squeue", "-u", user, "-p", partition, "-h", "-t", "R"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"squeue failed: {result.stderr}"
+    lines = [line for line in result.stdout.strip().split("\n") if line]
+    return len(lines)
 
 
 def submit_job(commands: str, template: str) -> bool:
@@ -90,6 +106,11 @@ def main():
         type=Path,
         help="Path to custom job template file (must contain {commands} placeholder)",
     )
+    parser.add_argument(
+        "--hi-template",
+        type=Path,
+        help="Path to high priority job template file for iris-hi partition",
+    )
     args = parser.parse_args()
 
     if not args.commands_file.exists():
@@ -102,6 +123,12 @@ def main():
     else:
         job_template = JOB_TEMPLATE
 
+    hi_template = None
+    if args.hi_template:
+        if not args.hi_template.exists():
+            raise FileNotFoundError(f"High priority template not found: {args.hi_template}")
+        hi_template = args.hi_template.read_text()
+
     command_segments = parse_commands_file(args.commands_file)
     print(f"Found {len(command_segments)} job(s) to submit")
 
@@ -110,6 +137,17 @@ def main():
         commands = command_segments[idx]
         print(f"\nSubmitting job {idx + 1}/{len(command_segments)}...")
 
+        # Try high priority partition first if enabled
+        if hi_template:
+            running_hi = count_running_jobs_in_partition(HI_PRIORITY_PARTITION)
+            print(f"High priority partition has {running_hi} running jobs")
+            if running_hi < HI_PRIORITY_MAX_JOBS:
+                print(f"Submitting to high priority partition...")
+                if submit_job(commands, hi_template):
+                    idx += 1
+                    continue
+
+        # Fall back to regular partition
         if submit_job(commands, job_template):
             idx += 1
         else:
