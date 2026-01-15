@@ -48,7 +48,7 @@ def count_running_jobs_in_partition(partition: str) -> int:
     """Count the number of running jobs for the current user in a partition."""
     user = getpass.getuser()
     result = subprocess.run(
-        ["squeue", "-u", user, "-p", partition, "-h", "-t", "R"],
+        ["squeue", "-u", user, "-p", partition, "-h"],
         capture_output=True,
         text=True,
     )
