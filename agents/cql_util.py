@@ -113,6 +113,7 @@ def get_rectified_loss(
     discount: float,
     action_chunk_size: int,
     action_chunk_eval_interval: int,
+    upper_bound_same_state: bool = True,
 ):
     """
     q and v_next are expected to be provided for each eval chunk (q at chunk
@@ -235,6 +236,13 @@ def get_rectified_loss(
         "batch chunk_post -> batch chunk_pre chunk_post",
         chunk_pre=num_eval_chunks,
     )
+    upper_bound_diffs_valid = jax.lax.cond(
+        upper_bound_same_state,
+        lambda x: x,
+        lambda x: x & (pairwise_time_diffs > action_chunk_size),
+        upper_bound_diffs_valid,
+    )
+
     upper_bound_loss = jnp.sum(
         jnp.maximum(
             mixed_util_from_eval_chunk_end_pre - util_from_eval_chunk_end_pre,
@@ -284,6 +292,7 @@ def get_lql_loss(
     action_chunk_size: int = 1,
     action_chunk_eval_interval: int = 1,
     rectified_loss_weight: float = 1.0,
+    upper_bound_same_state: bool = True,
 ):
     """
     Params:
@@ -348,6 +357,7 @@ def get_lql_loss(
         discount,
         action_chunk_size,
         action_chunk_eval_interval,
+        upper_bound_same_state,
     )
 
     info = {
