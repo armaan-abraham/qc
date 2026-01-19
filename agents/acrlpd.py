@@ -9,7 +9,7 @@ import optax
 from flax import linen as nn
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
-from rlpd_networks import Ensemble, StateActionValue, MLP
+from utils.networks import Value, MLP
 from rlpd_distributions import TanhNormal
 
 from functools import partial
@@ -199,17 +199,13 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
             config['target_entropy'] = -config['target_entropy_multiplier'] * full_action_dim
 
         # Define networks
-        critic_base_cls = partial(
-            MLP,
+        critic_def = Value(
             hidden_dims=config['value_hidden_dims'],
-            activate_final=True,
-            use_layer_norm=config["layer_norm"],
-        )
-        critic_cls = partial(StateActionValue, base_cls=critic_base_cls)
-        critic_def = Ensemble(critic_cls, num=config["num_qs"])
+            layer_norm=config['layer_norm'],
+            num_ensembles=config['num_qs'],
+        )        
 
-
-        actor_base_cls = partial(MLP, hidden_dims=config["actor_hidden_dims"], activate_final=True)
+        actor_base_cls = partial(MLP, hidden_dims=config['actor_hidden_dims'], activate_final=True, layer_norm=config['actor_layer_norm'])
         actor_def = TanhNormal(actor_base_cls, full_action_dim)
 
         # Define the dual alpha variable.
@@ -246,7 +242,7 @@ def get_config():
             actor_layer_norm=False,  # Whether to use layer normalization for the actor.
             discount=0.99,  # Discount factor.
             tau=0.005,  # Target network update rate.
-            num_qs=10,
+            num_qs=2,
             target_entropy=ml_collections.config_dict.placeholder(float),  # Target entropy (None for automatic tuning).
             target_entropy_multiplier=0.5,  # Multiplier to dim(A) for target entropy.
             alpha=1.0,
