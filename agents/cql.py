@@ -511,7 +511,7 @@ def get_config():
             flow_steps=10,  # Number of flow steps.
 
             # distill-ddpg and gaussian actor
-            alpha=100.0, # Behavior cloning weight
+            alpha=0.0, # Behavior cloning weight
 
             # Gaussian actor
             target_entropy_multiplier=0.5,  # Multiplier to dim(A) for target entropy.
