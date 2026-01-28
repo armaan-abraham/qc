@@ -264,9 +264,8 @@ class ACFQLAgent(flax.struct.PyTreeNode):
             ex_actions: Example batch of actions.
             config: Configuration dictionary.
         """
-        # Extract first timestep from contiguous batch
-        ex_observations = ex_observations[:, 0]
-        ex_actions = ex_actions[:, 0]
+        ex_observations = ex_observations[0, 0]
+        ex_actions = ex_actions[0, 0]
 
         rng = jax.random.PRNGKey(seed)
         rng, init_rng = jax.random.split(rng, 2)
