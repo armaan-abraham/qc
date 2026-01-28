@@ -293,8 +293,6 @@ class ACFQLAgent(flax.struct.PyTreeNode):
             hidden_dims=config['actor_hidden_dims'],
             action_dim=full_action_dim,
             layer_norm=config['actor_layer_norm'],
-            use_fourier_features=config["use_fourier_features"],
-            fourier_feature_dim=config["fourier_feature_dim"],
         )
         actor_onestep_flow_def = ActorVectorField(
             hidden_dims=config['actor_hidden_dims'],
