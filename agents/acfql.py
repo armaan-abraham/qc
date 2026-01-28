@@ -114,7 +114,32 @@ class ACFQLAgent(flax.struct.PyTreeNode):
         info = {}
         rng = rng if rng is not None else self.rng
 
+        batch_size = batch['observations'].shape[0]
+        sequence_length = self.config["horizon_length"]
+
         rng, actor_rng, critic_rng = jax.random.split(rng, 3)
+
+        rewards = jnp.zeros((batch_size, sequence_length), dtype=float)
+        masks = jnp.ones((batch_size, sequence_length), dtype=float)
+        terminals = jnp.zeros((batch_size, sequence_length), dtype=float)
+        valid = jnp.ones((batch_size, sequence_length), dtype=float)
+
+        rewards = rewards.at[:, 0].set(batch['rewards'][:, 0].squeeze())
+        masks = masks.at[:, 0].set(batch['masks'][:, 0].squeeze())
+        terminals = terminals.at[:, 0].set(batch['terminals'][:, 0].squeeze())
+
+        discount_powers = self.config['discount'] ** jnp.arange(sequence_length)
+
+        for i in range(1, sequence_length):
+            rewards = rewards.at[:, i].set(rewards[:, i-1] + batch['rewards'][:, i].squeeze() * discount_powers[i])
+            masks = masks.at[:, i].set(jnp.minimum(masks[:, i-1], batch['masks'][:, i].squeeze()))
+            terminals = terminals.at[:, i].set(jnp.maximum(terminals[:, i-1], batch['terminals'][:, i].squeeze()))
+            valid = valid.at[:, i].set(1.0 - terminals[:, i-1])
+
+        batch['rewards'] = rewards
+        batch['masks'] = masks
+        batch['terminals'] = terminals
+        batch['valid'] = valid
 
         critic_loss, critic_info = self.critic_loss(batch, grad_params, critic_rng)
         for k, v in critic_info.items():
