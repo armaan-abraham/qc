@@ -264,6 +264,8 @@ class ACFQLAgent(flax.struct.PyTreeNode):
             ex_actions: Example batch of actions.
             config: Configuration dictionary.
         """
+        print("Observation shape:", ex_observations.shape)
+        print("Action shape:", ex_actions.shape)
         ex_observations = ex_observations[0, 0]
         ex_actions = ex_actions[0, 0]
 
