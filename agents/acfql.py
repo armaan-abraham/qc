@@ -140,6 +140,8 @@ class ACFQLAgent(flax.struct.PyTreeNode):
         batch['masks'] = masks
         batch['terminals'] = terminals
         batch['valid'] = valid
+        assert batch['observations'].ndim == 3  # (batch_size, sequence_length, ob_dim)
+        batch['observations'] = batch['observations'][:, 0]
 
         critic_loss, critic_info = self.critic_loss(batch, grad_params, critic_rng)
         for k, v in critic_info.items():
