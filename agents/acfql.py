@@ -239,8 +239,6 @@ class ACFQLAgent(flax.struct.PyTreeNode):
         noises,
     ):
         """Compute actions from the BC flow model using the Euler method."""
-        if self.config['encoder'] is not None:
-            observations = self.network.select('actor_bc_flow_encoder')(observations)
         actions = noises
         # Euler method.
         for i in range(self.config['flow_steps']):
@@ -268,6 +266,7 @@ class ACFQLAgent(flax.struct.PyTreeNode):
         """
         print("Observation shape:", ex_observations.shape)
         print("Action shape:", ex_actions.shape)
+        assert not config['action_chunking']
         ex_observations = ex_observations[0, 0]
         ex_actions = ex_actions[0, 0]
 
@@ -283,27 +282,17 @@ class ACFQLAgent(flax.struct.PyTreeNode):
             full_actions = ex_actions
         full_action_dim = full_actions.shape[-1]
 
-        # Define encoders.
-        encoders = dict()
-        if config['encoder'] is not None:
-            encoder_module = encoder_modules[config['encoder']]
-            encoders['critic'] = encoder_module()
-            encoders['actor_bc_flow'] = encoder_module()
-            encoders['actor_onestep_flow'] = encoder_module()
-
         # Define networks.
         critic_def = Value(
             hidden_dims=config['value_hidden_dims'],
             layer_norm=config['layer_norm'],
             num_ensembles=config['num_qs'],
-            encoder=encoders.get('critic'),
         )
 
         actor_bc_flow_def = ActorVectorField(
             hidden_dims=config['actor_hidden_dims'],
             action_dim=full_action_dim,
             layer_norm=config['actor_layer_norm'],
-            encoder=encoders.get('actor_bc_flow'),
             use_fourier_features=config["use_fourier_features"],
             fourier_feature_dim=config["fourier_feature_dim"],
         )
@@ -311,7 +300,6 @@ class ACFQLAgent(flax.struct.PyTreeNode):
             hidden_dims=config['actor_hidden_dims'],
             action_dim=full_action_dim,
             layer_norm=config['actor_layer_norm'],
-            encoder=encoders.get('actor_onestep_flow'),
         )
 
         
@@ -321,17 +309,11 @@ class ACFQLAgent(flax.struct.PyTreeNode):
             critic=(critic_def, (ex_observations, full_actions)),
             target_critic=(copy.deepcopy(critic_def), (ex_observations, full_actions)),
         )
-        if encoders.get('actor_bc_flow') is not None:
-            # Add actor_bc_flow_encoder to ModuleDict to make it separately callable.
-            network_info['actor_bc_flow_encoder'] = (encoders.get('actor_bc_flow'), (ex_observations,))
         networks = {k: v[0] for k, v in network_info.items()}
         network_args = {k: v[1] for k, v in network_info.items()}
 
         network_def = ModuleDict(networks)
-        if config["weight_decay"] > 0.:
-            network_tx = optax.adamw(learning_rate=config['lr'], weight_decay=config["weight_decay"])
-        else:
-            network_tx = optax.adam(learning_rate=config['lr'])
+        network_tx = optax.adam(learning_rate=config['lr'])
         network_params = network_def.init(init_rng, **network_args)['params']
         network = TrainState.create(network_def, network_params, tx=network_tx)
 
@@ -370,8 +352,6 @@ def get_config():
             action_chunking=True,  # False means n-step return
             actor_type="distill-ddpg",
             actor_num_samples=32,  # for actor_type="best-of-n" only
-            use_fourier_features=False,
-            fourier_feature_dim=64,
             weight_decay=0.,
         )
     )

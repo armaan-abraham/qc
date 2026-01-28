@@ -107,7 +107,11 @@ class Dataset(FrozenDict):
 
         # Assert next observations are shifted by one timestep for each sequence
         assert np.all(np.all((batch_next_observations[:, :-1] == batch_observations[:, 1:]), axis=-1) | (batch_terminals[:, :-1] == 1) | (batch_masks[:, :-1] == 0))
+        num_changed = np.sum(batch_terminals[~batch_masks.astype(bool)] == 0.0)
+        if num_changed > 0:
+            print(f"Warning: {num_changed} terminal flags were corrected to 1.0 due to episode completions in contiguous sampling.")
         batch_terminals[~batch_masks.astype(bool)] = 1.0  # Ensure terminals are 1 on episode completions
+        
 
         return dict(
             observations=batch_observations,
