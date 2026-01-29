@@ -247,6 +247,9 @@ class CQLAgent(flax.struct.PyTreeNode):
     def total_loss(self, batch, grad_params, rng=None):
         info = {}
 
+        # Ensure terminals are 1 on episode completions
+        batch['terminals'] = batch['terminals'].at[~batch['masks'].astype(bool)].set(1.0)
+
         rng = rng if rng is not None else self.rng
 
         rng, actor_rng, critic_rng = jax.random.split(rng, 3)
