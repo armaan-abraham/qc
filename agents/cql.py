@@ -248,7 +248,7 @@ class CQLAgent(flax.struct.PyTreeNode):
         info = {}
 
         # Ensure terminals are 1 on episode completions
-        batch['terminals'] = batch['terminals'].at[~batch['masks'].astype(bool)].set(1.0)
+        batch['terminals'] = (batch['terminals'].astype(bool) | ~batch['masks'].astype(bool)).astype(jnp.float32)
 
         rng = rng if rng is not None else self.rng
 
